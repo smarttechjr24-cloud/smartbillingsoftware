@@ -35,8 +35,16 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
   double gst = 0.0;
   double grandTotal = 0.0;
 
-  final invoiceDate = DateTime.now();
+  var invoiceDate = DateTime.now();
   late DateTime dueDate;
+  String _dueTerm = "Net 7"; // default option
+  final List<String> _dueOptions = [
+    "Net 7",
+    "Net 30",
+    "Net 60",
+    "No Due",
+    "Custom Date",
+  ];
 
   @override
   void initState() {
@@ -53,6 +61,67 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
     _noteController.dispose();
     _gstController.dispose();
     super.dispose();
+  }
+
+  void _updateDueDate(String term) {
+    setState(() {
+      _dueTerm = term;
+      switch (term) {
+        case "Net 7":
+          dueDate = invoiceDate.add(const Duration(days: 7));
+          break;
+        case "Net 30":
+          dueDate = invoiceDate.add(const Duration(days: 30));
+          break;
+        case "Net 60":
+          dueDate = invoiceDate.add(const Duration(days: 60));
+          break;
+        case "No Due":
+          dueDate = invoiceDate; // symbolic far future, optional
+          break;
+        case "Custom Date":
+          _pickDueDate();
+          break;
+      }
+    });
+  }
+
+  Future<void> _pickInvoiceDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: invoiceDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() {
+        // Adjust due date relative to new invoice date if term is Net 7/30/60
+        final diff = dueDate.difference(invoiceDate).inDays;
+        invoiceDate = picked;
+        if (_dueTerm.startsWith("Net")) {
+          final days =
+              int.tryParse(_dueTerm.replaceAll(RegExp(r'\D'), "")) ?? 7;
+          dueDate = picked.add(Duration(days: days));
+        } else if (_dueTerm == "Custom Date") {
+          // keep custom as is
+        }
+      });
+    }
+  }
+
+  Future<void> _pickDueDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: dueDate,
+      firstDate: invoiceDate,
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() {
+        dueDate = picked;
+        _dueTerm = "Custom Date";
+      });
+    }
   }
 
   // -------------------------------------------------------------
@@ -695,27 +764,71 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    "Invoice #Auto",
-                    style: theme.textTheme.titleMedium!.copyWith(
-                      fontWeight: FontWeight.bold,
+                  Expanded(
+                    child: InkWell(
+                      onTap: _pickInvoiceDate,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.calendar_today,
+                            size: 18,
+                            color: Colors.teal,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            "Invoice: ${DateFormat('dd MMM yyyy').format(invoiceDate)}",
+                            style: theme.textTheme.bodyMedium!.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text("Date: ${df.format(invoiceDate)}"),
-                      Text(
-                        "Due: ${df.format(dueDate)}",
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontSize: 12,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        const Icon(
+                          Icons.schedule,
+                          size: 18,
+                          color: Colors.teal,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _dueTerm,
+                              items: _dueOptions.map((term) {
+                                return DropdownMenuItem(
+                                  value: term,
+                                  child: Text(
+                                    term,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                );
+                              }).toList(),
+                              onChanged: (val) {
+                                if (val != null) _updateDueDate(val);
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  "Due Date: ${_dueTerm == "No Due" ? df.format(invoiceDate) : DateFormat('dd MMM yyyy').format(dueDate)}",
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                ),
+              ),
+
               const SizedBox(height: 20),
 
               // Customer Info Card

@@ -4,14 +4,14 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:smartbilling/screens/add_quotation.dart';
-import 'package:smartbilling/screens/ai_screen.dart';
 
 // Screens
 import 'config/theme.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/add_invoice_screen.dart';
+
 import 'screens/profile_screen.dart';
-import 'screens/notifications_screen.dart'; // Import the voice assistant screen
+import 'screens/notifications_screen.dart';
 import 'login_screen.dart';
 import 'company_details_screen.dart';
 
@@ -223,27 +223,6 @@ class _MainNavigationState extends State<MainNavigation> {
         ],
       ),
       body: _selectedIndex == 1 ? const SizedBox() : _screens[_selectedIndex],
-
-      // ✨ Floating Action Button for AI Assistant
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => const VoiceAssistantChatbotScreen(),
-            ),
-          );
-        },
-        backgroundColor: Colors.teal.shade600,
-        elevation: 6,
-        icon: const Icon(Icons.smart_toy, color: Colors.white),
-        label: const Text(
-          "AI Assistant",
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-
       bottomNavigationBar: NavigationBar(
         height: 65,
         backgroundColor: Colors.white,

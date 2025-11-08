@@ -272,37 +272,51 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                               itemCount: items.length,
                               itemBuilder: (context, idx) {
                                 final item = items[idx];
-                                final nameCtrl = TextEditingController(
-                                  text: item['item'],
-                                );
-                                final qtyCtrl = TextEditingController(
-                                  text: (item['qty'] ?? 1).toString(),
-                                );
-                                final rateCtrl = TextEditingController(
-                                  text: (item['rate'] ?? 0).toString(),
-                                );
+
+                                // ✅ Persistent controllers (store once per item)
+                                if (item['controllers'] == null) {
+                                  item['controllers'] = {
+                                    'name': TextEditingController(
+                                      text: item['item'] ?? '',
+                                    ),
+                                    'qty': TextEditingController(
+                                      text: (item['qty'] ?? 1).toString(),
+                                    ),
+                                    'rate': TextEditingController(
+                                      text: (item['rate'] ?? 0).toString(),
+                                    ),
+                                  };
+                                }
+
+                                final nameCtrl =
+                                    item['controllers']['name']
+                                        as TextEditingController;
+                                final qtyCtrl =
+                                    item['controllers']['qty']
+                                        as TextEditingController;
+                                final rateCtrl =
+                                    item['controllers']['rate']
+                                        as TextEditingController;
 
                                 List<Map<String, dynamic>> suggestions = [];
 
                                 return StatefulBuilder(
                                   builder: (context, setLocal) {
                                     return Card(
-                                      margin: EdgeInsets.symmetric(
-                                        vertical: size.height * 0.01,
+                                      margin: const EdgeInsets.symmetric(
+                                        vertical: 8,
                                       ),
-                                      elevation: 2,
+                                      elevation: 3,
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(10),
                                       ),
                                       child: Padding(
-                                        padding: EdgeInsets.all(
-                                          size.width * 0.03,
-                                        ),
+                                        padding: const EdgeInsets.all(12),
                                         child: Column(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            // --- Item Name with AJAX Suggestions ---
+                                            // 🧠 Item Name with AJAX Suggestions
                                             TextFormField(
                                               controller: nameCtrl,
                                               decoration: const InputDecoration(
@@ -314,9 +328,9 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                 if (v.trim().length > 1) {
                                                   _ajaxSearchProducts(
                                                     v,
-                                                    (res) => setLocal(() {
-                                                      suggestions = res;
-                                                    }),
+                                                    (res) => setLocal(
+                                                      () => suggestions = res,
+                                                    ),
                                                   );
                                                 } else {
                                                   setLocal(
@@ -359,8 +373,11 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                             nameCtrl.text =
                                                                 p['name'];
                                                             rateCtrl.text =
-                                                                p['rate']
-                                                                    .toString();
+                                                                (p['rate'] ??
+                                                                        0.0)
+                                                                    .toStringAsFixed(
+                                                                      2,
+                                                                    );
                                                             suggestions.clear();
                                                             setLocal(() {});
                                                             recalculateTotal();
@@ -370,14 +387,12 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                       .toList(),
                                                 ),
                                               ),
-                                            SizedBox(
-                                              height: size.height * 0.012,
-                                            ),
+                                            const SizedBox(height: 10),
 
-                                            // --- Editable Qty & Rate ---
+                                            // 🧾 Editable Qty + Rate Row
                                             Row(
                                               children: [
-                                                // Qty
+                                                // ➕➖ Qty Field
                                                 Flexible(
                                                   flex: 4,
                                                   child: Row(
@@ -411,8 +426,9 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                           textAlign:
                                                               TextAlign.center,
                                                           keyboardType:
-                                                              TextInputType
-                                                                  .number,
+                                                              const TextInputType.numberWithOptions(
+                                                                decimal: true,
+                                                              ),
                                                           decoration:
                                                               const InputDecoration(
                                                                 labelText:
@@ -423,7 +439,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                           onChanged: (v) {
                                                             item['qty'] =
                                                                 double.tryParse(
-                                                                  v,
+                                                                  v.trim(),
                                                                 ) ??
                                                                 1;
                                                             recalculateTotal();
@@ -451,38 +467,63 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                     ],
                                                   ),
                                                 ),
-                                                SizedBox(
-                                                  width: size.width * 0.02,
-                                                ),
-                                                // Rate
+                                                const SizedBox(width: 10),
+
+                                                // 💰 Rate Field (Editable + Autofocus Friendly)
                                                 Flexible(
                                                   flex: 4,
-                                                  child: TextFormField(
-                                                    controller: rateCtrl,
-                                                    textAlign: TextAlign.center,
-                                                    keyboardType:
-                                                        TextInputType.number,
-                                                    decoration:
-                                                        const InputDecoration(
-                                                          labelText: "Rate (₹)",
-                                                          border:
-                                                              OutlineInputBorder(),
-                                                        ),
-                                                    onChanged: (v) {
-                                                      item['rate'] =
-                                                          double.tryParse(v) ??
-                                                          0.0;
-                                                      recalculateTotal();
+                                                  child: Focus(
+                                                    onFocusChange: (hasFocus) {
+                                                      if (!hasFocus) {
+                                                        _ensureProductExists(
+                                                          nameCtrl.text,
+                                                          double.tryParse(
+                                                                rateCtrl.text,
+                                                              ) ??
+                                                              0.0,
+                                                        );
+                                                      }
                                                     },
-                                                    onEditingComplete: () {
-                                                      _ensureProductExists(
-                                                        nameCtrl.text,
-                                                        double.tryParse(
-                                                              rateCtrl.text,
+                                                    child: TextField(
+                                                      controller: rateCtrl,
+                                                      keyboardType:
+                                                          const TextInputType.numberWithOptions(
+                                                            decimal: true,
+                                                          ),
+                                                      textAlign:
+                                                          TextAlign.center,
+                                                      decoration:
+                                                          const InputDecoration(
+                                                            labelText:
+                                                                "Rate (₹)",
+                                                            border:
+                                                                OutlineInputBorder(),
+                                                          ),
+                                                      style: const TextStyle(
+                                                        fontSize: 16,
+                                                      ),
+                                                      enableInteractiveSelection:
+                                                          true,
+                                                      onTap: () {
+                                                        // Select all text for easy overwrite
+                                                        rateCtrl.selection =
+                                                            TextSelection(
+                                                              baseOffset: 0,
+                                                              extentOffset:
+                                                                  rateCtrl
+                                                                      .text
+                                                                      .length,
+                                                            );
+                                                      },
+                                                      onChanged: (v) {
+                                                        item['rate'] =
+                                                            double.tryParse(
+                                                              v.trim(),
                                                             ) ??
-                                                            0.0,
-                                                      );
-                                                    },
+                                                            0.0;
+                                                        recalculateTotal();
+                                                      },
+                                                    ),
                                                   ),
                                                 ),
                                                 IconButton(
@@ -497,9 +538,8 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                 ),
                                               ],
                                             ),
-                                            SizedBox(
-                                              height: size.height * 0.008,
-                                            ),
+                                            const SizedBox(height: 6),
+
                                             Align(
                                               alignment: Alignment.centerRight,
                                               child: Text(
@@ -519,7 +559,6 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                               },
                             ),
                           ),
-
                           // --- Total Section ---
                           SizedBox(height: size.height * 0.012),
                           Container(
@@ -604,49 +643,84 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
     );
   }
 
-  // 🔹 Convert Function - FIXED
+  // 🔹 Convert Function - SAFE & CLEANED VERSION
   Future<void> _convertToInvoice(
     String quoteId,
     Map<String, dynamic> data,
   ) async {
     try {
       final uid = _uid;
-      if (uid == null) return;
+      if (uid == null) {
+        _showSnack('❌ User not logged in');
+        return;
+      }
 
-      final invoicesRef = _firestore
+      final firestore = _firestore;
+      final invoicesRef = firestore
           .collection('users')
           .doc(uid)
           .collection('invoices');
 
-      final customersRef = _firestore
+      final customersRef = firestore
           .collection('users')
           .doc(uid)
           .collection('customers');
 
-      final quotationRef = _firestore
+      final quotationRef = firestore
           .collection('users')
           .doc(uid)
           .collection('quotations')
           .doc(quoteId);
 
+      // 🧾 Auto-increment invoice number
+      final countSnapshot = await invoicesRef.count().get();
+      final nextNumber = (countSnapshot.count ?? 0) + 1;
+      final invoiceNumber = "INV-$nextNumber";
+
+      // 📅 Dates
+      final invoiceDate = DateTime.now();
+      final dueDate = invoiceDate.add(const Duration(days: 7));
+
+      // 🧹 Clean TextEditingControllers before saving
+      final List<Map<String, dynamic>> cleanedItems = [];
+      if (data['items'] != null && data['items'] is List) {
+        for (var i in data['items']) {
+          cleanedItems.add({
+            'item': i['item'] ?? '',
+            'qty': (i['qty'] ?? 1).toDouble(),
+            'rate': (i['rate'] ?? 0).toDouble(),
+          });
+        }
+      }
+
+      final double grandTotal = (data['grand_total'] ?? 0).toDouble();
+      final String customerName = data['customer_name'] ?? 'Unknown';
+
+      // 💰 Prepare invoice data
       final newInvoiceRef = invoicesRef.doc();
       final invoiceId = newInvoiceRef.id;
 
-      final double grandTotal = (data['grand_total'] ?? 0).toDouble();
-      final customerName = data['customer_name'] ?? 'Unknown';
-
-      await newInvoiceRef.set({
-        ...data,
+      final invoiceData = {
         'id': invoiceId,
+        'invoice_number': invoiceNumber,
+        'invoice_date': invoiceDate.toIso8601String(),
+        'due_date': dueDate.toIso8601String(),
         'status': 'Pending',
         'quotation_id': quoteId,
         'created_at': FieldValue.serverTimestamp(),
-      });
+        'customer_name': customerName,
+        'billing_address': data['billing_address'] ?? '',
+        'grand_total': grandTotal,
+        'items': cleanedItems, // ✅ Cleaned version
+      };
 
-      // ✅ Update Quotation Status
+      // 🧠 Save invoice
+      await newInvoiceRef.set(invoiceData);
+
+      // 🔄 Update quotation status
       await quotationRef.update({'status': 'Converted'});
 
-      // ✅ Update Customer Outstanding
+      // 👤 Update customer outstanding
       final customersQuery = await customersRef
           .where('name', isEqualTo: customerName)
           .limit(1)
@@ -668,8 +742,12 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
         });
       }
 
-      _showSnack('✅ Quotation converted to Invoice!', success: true);
-    } catch (e) {
+      _showSnack(
+        '✅ Quotation converted to Invoice #$invoiceNumber!',
+        success: true,
+      );
+    } catch (e, st) {
+      debugPrint("❌ Conversion failed: $e\n$st");
       _showSnack('❌ Conversion failed: $e');
     }
   }
@@ -1255,32 +1333,85 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                               onSelected: (v) async {
                                 switch (v) {
                                   case 'edit':
-                                    // You would call _openEditDialog here
                                     _openEditDialog(doc.id, data);
-
                                     break;
+
                                   case 'convert':
+                                    if ((data['status'] ?? '') == 'Converted')
+                                      return; // disabled
                                     _openConvertDialog(doc.id, data);
                                     break;
+
                                   case 'delete':
+                                    if ((data['status'] ?? '') == 'Converted')
+                                      return; // disabled
                                     _deleteQuotation(doc.id);
                                     break;
                                 }
                               },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: 'edit',
-                                  child: Text("Edit"),
-                                ),
-                                PopupMenuItem(
-                                  value: 'convert',
-                                  child: Text("Convert"),
-                                ),
-                                PopupMenuItem(
-                                  value: 'delete',
-                                  child: Text("Delete"),
-                                ),
-                              ],
+                              itemBuilder: (_) {
+                                final isConverted =
+                                    (data['status'] ?? '').toString() ==
+                                    'Converted';
+
+                                return [
+                                  // 📝 Edit option (always enabled)
+                                  const PopupMenuItem(
+                                    value: 'edit',
+                                    child: Text("Edit"),
+                                  ),
+
+                                  // 🔄 Convert option (disabled if already converted)
+                                  PopupMenuItem(
+                                    value: 'convert',
+                                    enabled: !isConverted,
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.receipt_long_outlined,
+                                          color: isConverted
+                                              ? Colors.grey
+                                              : Colors.blue,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          "Convert to Invoice",
+                                          style: TextStyle(
+                                            color: isConverted
+                                                ? Colors.grey
+                                                : Colors.black87,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  // 🗑️ Delete option (disabled if converted)
+                                  PopupMenuItem(
+                                    value: 'delete',
+                                    enabled: !isConverted,
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.delete_outline,
+                                          color: isConverted
+                                              ? Colors.grey
+                                              : Colors.redAccent,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          "Delete",
+                                          style: TextStyle(
+                                            color: isConverted
+                                                ? Colors.grey
+                                                : Colors.black87,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ];
+                              },
                             ),
                           ],
                         ),

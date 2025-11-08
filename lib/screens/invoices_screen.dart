@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:smartbilling/utils/delivery_chellan.dart';
 import '../utils/pdf.dart';
 import 'add_invoice_screen.dart';
@@ -144,160 +145,306 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     }
 
     final amountCtrl = TextEditingController();
+    final upiIdCtrl = TextEditingController();
+    final chequeCtrl = TextEditingController();
     String paymentMode = "Cash";
+    bool showQR = false;
+    String qrLink = "";
 
     await showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
-            return AlertDialog(
+            Future<void> savePayment() async {
+              final entered = double.tryParse(amountCtrl.text.trim()) ?? 0.0;
+              if (entered <= 0) {
+                _showSnack("❌ Enter a valid amount");
+                return;
+              }
+              if (entered > balance) {
+                _showSnack("❌ Payment exceeds balance due");
+                return;
+              }
+
+              // Compute new values
+              final newPaid = paid + entered;
+              final newBalance = total - newPaid;
+
+              String status = "Pending";
+              if (newPaid == 0)
+                status = "Pending";
+              else if (newPaid < total)
+                status = "Partially Paid";
+              else
+                status = "Paid";
+
+              final now = DateTime.now();
+              final firestore = FirebaseFirestore.instance;
+              final userRef = firestore.collection('users').doc(_uid);
+              final invoiceRef = userRef.collection('invoices').doc(invoiceId);
+
+              try {
+                // 🧾 1. Add payment under invoice
+                await invoiceRef.collection('payments').add({
+                  'amount': entered,
+                  'payment_mode': paymentMode,
+                  'upi_id': upiIdCtrl.text.trim(),
+                  'cheque_no': chequeCtrl.text.trim(),
+                  'created_at': Timestamp.now(),
+                });
+
+                // 🧾 2. Add to main payments collection
+                await userRef.collection('payments').add({
+                  'amount': entered,
+                  'payment_mode': paymentMode,
+                  'upi_id': upiIdCtrl.text.trim(),
+                  'cheque_no': chequeCtrl.text.trim(),
+                  'created_at': Timestamp.now(),
+                  'customer_name': customerName,
+                  'invoice_id': invoiceId,
+                  'invoice_number': invoiceNumber,
+                  'balance_due': newBalance,
+                });
+
+                // 💰 3. Update invoice totals
+                await invoiceRef.update({
+                  'paid_amount': newPaid,
+                  'balance_due': newBalance,
+                  'status': status,
+                  'last_payment_date': now.toIso8601String(),
+                });
+
+                // 👤 4. Update customer's outstanding
+                final custSnap = await userRef
+                    .collection('customers')
+                    .where('name', isEqualTo: customerName)
+                    .limit(1)
+                    .get();
+
+                if (custSnap.docs.isNotEmpty) {
+                  final custDoc = custSnap.docs.first;
+                  final currentOutstanding = (custDoc['outstanding'] ?? 0)
+                      .toDouble();
+                  final newOutstanding = (currentOutstanding - entered).clamp(
+                    0,
+                    double.infinity,
+                  );
+                  await custDoc.reference.update({
+                    'outstanding': newOutstanding,
+                  });
+                }
+
+                if (ctx.mounted) Navigator.pop(ctx);
+                _showSnack("✅ Payment added successfully!", success: true);
+              } catch (e) {
+                _showSnack("❌ Failed to add payment: $e");
+              }
+            }
+
+            void generateQR() async {
+              final entered = double.tryParse(amountCtrl.text.trim()) ?? 0.0;
+              if (entered <= 0) {
+                _showSnack("Enter valid amount before generating QR");
+                return;
+              }
+
+              String upiId = upiIdCtrl.text.trim();
+              if (upiId.isEmpty) {
+                final companyRef = FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(_uid)
+                    .collection('company')
+                    .doc('details');
+                final doc = await companyRef.get();
+                upiId = doc.data()?['upi_id'] ?? "";
+                if (upiId.isEmpty) {
+                  _showSnack("⚠️ Enter or save your UPI ID first");
+                  return;
+                }
+              }
+
+              final link =
+                  "upi://pay?pa=$upiId&pn=${Uri.encodeComponent(customerName)}&am=$entered&cu=INR";
+              setStateDialog(() {
+                qrLink = link;
+                showQR = true;
+              });
+            }
+
+            return Dialog(
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
               ),
-              title: const Text("Add Payment"),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text("Invoice Total: ₹${total.toStringAsFixed(2)}"),
-                  Text("Already Paid: ₹${paid.toStringAsFixed(2)}"),
-                  Text("Balance Due: ₹${balance.toStringAsFixed(2)}"),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: amountCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Enter Payment Amount",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  DropdownButtonFormField<String>(
-                    value: paymentMode,
-                    decoration: const InputDecoration(
-                      labelText: "Payment Mode",
-                      border: OutlineInputBorder(),
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: "Cash", child: Text("Cash")),
-                      DropdownMenuItem(
-                        value: "UPI",
-                        child: Text("UPI / QR / Paytm"),
+              insetPadding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Text(
+                          "💳 Add Payment",
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                      DropdownMenuItem(
-                        value: "Bank Transfer",
-                        child: Text("Bank Transfer"),
+                      const SizedBox(height: 8),
+                      Text("Invoice: $invoiceNumber"),
+                      Text("Customer: $customerName"),
+                      Text("Total: ₹${total.toStringAsFixed(2)}"),
+                      Text("Paid: ₹${paid.toStringAsFixed(2)}"),
+                      Text(
+                        "Balance: ₹${balance.toStringAsFixed(2)}",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.redAccent,
+                        ),
                       ),
-                      DropdownMenuItem(
-                        value: "Credit Card",
-                        child: Text("Credit Card"),
+                      const Divider(height: 20),
+                      TextField(
+                        controller: amountCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: "Enter Payment Amount",
+                          prefixIcon: Icon(Icons.currency_rupee),
+                          border: OutlineInputBorder(),
+                        ),
                       ),
-                      DropdownMenuItem(value: "Cheque", child: Text("Cheque")),
-                      DropdownMenuItem(value: "Other", child: Text("Other")),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        value: paymentMode,
+                        decoration: const InputDecoration(
+                          labelText: "Payment Mode",
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: "Cash", child: Text("Cash")),
+                          DropdownMenuItem(
+                            value: "UPI",
+                            child: Text("UPI / QR"),
+                          ),
+                          DropdownMenuItem(
+                            value: "Bank Transfer",
+                            child: Text("Bank Transfer"),
+                          ),
+                          DropdownMenuItem(
+                            value: "Credit Card",
+                            child: Text("Credit Card"),
+                          ),
+                          DropdownMenuItem(
+                            value: "Cheque",
+                            child: Text("Cheque"),
+                          ),
+                          DropdownMenuItem(
+                            value: "Other",
+                            child: Text("Other"),
+                          ),
+                        ],
+                        onChanged: (v) {
+                          setStateDialog(() {
+                            paymentMode = v ?? "Cash";
+                            showQR = false;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 10),
+
+                      // Optional fields
+                      if (paymentMode == "UPI") ...[
+                        TextField(
+                          controller: upiIdCtrl,
+                          decoration: const InputDecoration(
+                            labelText: "UPI ID (optional)",
+                            prefixIcon: Icon(Icons.qr_code_2),
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                      if (paymentMode == "Cheque") ...[
+                        TextField(
+                          controller: chequeCtrl,
+                          decoration: const InputDecoration(
+                            labelText: "Cheque No (optional)",
+                            prefixIcon: Icon(Icons.numbers),
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+
+                      if (showQR) ...[
+                        const Divider(),
+                        const Center(
+                          child: Text(
+                            "Scan to Pay",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Center(
+                          child: QrImageView(
+                            data: qrLink,
+                            size: 180,
+                            backgroundColor: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Center(
+                          child: Text(
+                            "₹${amountCtrl.text.trim()} for $customerName",
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: savePayment,
+                              icon: const Icon(Icons.save),
+                              label: const Text("Save"),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green,
+                                minimumSize: const Size(double.infinity, 46),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          if (paymentMode == "UPI")
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: generateQR,
+                                icon: const Icon(Icons.qr_code_2),
+                                label: const Text("Generate"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blueAccent,
+                                  minimumSize: const Size(double.infinity, 46),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
                     ],
-                    onChanged: (v) =>
-                        setStateDialog(() => paymentMode = v ?? "Cash"),
                   ),
-                ],
+                ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text("Cancel"),
-                ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.check_circle_outline),
-                  label: const Text("Save Payment"),
-                  onPressed: () async {
-                    final entered =
-                        double.tryParse(amountCtrl.text.trim()) ?? 0.0;
-                    if (entered <= 0) {
-                      _showSnack("❌ Enter a valid amount");
-                      return;
-                    }
-                    if (entered > balance) {
-                      _showSnack("❌ Payment exceeds balance due");
-                      return;
-                    }
-
-                    // Compute new values
-                    final newPaid = paid + entered;
-                    final newBalance = total - newPaid;
-
-                    String status = "Pending";
-                    if (newPaid == 0) {
-                      status = "Pending";
-                    } else if (newPaid < total) {
-                      status = "Partially Paid";
-                    } else if (newPaid >= total) {
-                      status = "Paid";
-                    }
-
-                    final now = DateTime.now();
-                    final firestore = FirebaseFirestore.instance;
-                    final userRef = firestore.collection('users').doc(_uid);
-                    final invoiceRef = userRef
-                        .collection('invoices')
-                        .doc(invoiceId);
-
-                    try {
-                      // 🧾 1. Save payment inside invoice’s subcollection
-                      await invoiceRef.collection('payments').add({
-                        'amount': entered,
-                        'payment_mode': paymentMode,
-                        'created_at': Timestamp.now(),
-                      });
-
-                      // 🧾 2. Save copy in main payments collection (for receipt screen)
-                      await userRef.collection('payments').add({
-                        'amount': entered,
-                        'payment_mode': paymentMode,
-                        'created_at': Timestamp.now(),
-                        'customer_name': customerName,
-                        'invoice_id': invoiceId,
-                        'invoice_number': invoiceNumber,
-                        'balance_due': newBalance,
-                      });
-
-                      // 💰 3. Update invoice totals
-                      await invoiceRef.update({
-                        'paid_amount': newPaid,
-                        'balance_due': newBalance,
-                        'status': status,
-                        'last_payment_date': now.toIso8601String(),
-                      });
-
-                      // 👤 4. Update customer's outstanding
-                      final custSnap = await userRef
-                          .collection('customers')
-                          .where('name', isEqualTo: customerName)
-                          .limit(1)
-                          .get();
-
-                      if (custSnap.docs.isNotEmpty) {
-                        final custDoc = custSnap.docs.first;
-                        final currentOutstanding = (custDoc['outstanding'] ?? 0)
-                            .toDouble();
-                        final newOutstanding = (currentOutstanding - entered)
-                            .clamp(0, double.infinity);
-
-                        await custDoc.reference.update({
-                          'outstanding': newOutstanding,
-                        });
-                      }
-
-                      if (ctx.mounted) Navigator.pop(ctx);
-                      _showSnack(
-                        "✅ Payment added successfully!",
-                        success: true,
-                      );
-                    } catch (e) {
-                      _showSnack("❌ Failed to add payment: $e");
-                    }
-                  },
-                ),
-              ],
             );
           },
         );
@@ -317,13 +464,50 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     final noteCtrl = TextEditingController(text: data['note'] ?? '');
     double gst = (data['gst_percentage'] ?? 18).toDouble();
 
+    DateTime invoiceDate =
+        DateTime.tryParse(data['invoice_date'] ?? '') ?? DateTime.now();
+    DateTime dueDate =
+        DateTime.tryParse(data['due_date'] ?? '') ??
+        DateTime.now().add(const Duration(days: 7));
+
     final formKey = GlobalKey<FormState>();
+
+    Future<void> _pickInvoiceDate(StateSetter setStateDialog) async {
+      final picked = await showDatePicker(
+        context: context,
+        initialDate: invoiceDate,
+        firstDate: DateTime(2020),
+        lastDate: DateTime(2100),
+      );
+      if (picked != null) {
+        setStateDialog(() {
+          invoiceDate = picked;
+          // adjust due date if older than invoice date
+          if (dueDate.isBefore(invoiceDate)) {
+            dueDate = invoiceDate.add(const Duration(days: 7));
+          }
+        });
+      }
+    }
+
+    Future<void> _pickDueDate(StateSetter setStateDialog) async {
+      final picked = await showDatePicker(
+        context: context,
+        initialDate: dueDate,
+        firstDate: invoiceDate,
+        lastDate: DateTime(2100),
+      );
+      if (picked != null) {
+        setStateDialog(() => dueDate = picked);
+      }
+    }
 
     await showDialog(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
+            final df = DateFormat("dd MMM yyyy");
             return AlertDialog(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
@@ -338,6 +522,52 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // 🔹 Invoice Date
+                      InkWell(
+                        onTap: () => _pickInvoiceDate(setStateDialog),
+                        child: InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: "Invoice Date",
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.calendar_today),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(df.format(invoiceDate)),
+                              const Icon(
+                                Icons.edit_calendar,
+                                color: Colors.teal,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      // 🔹 Due Date
+                      InkWell(
+                        onTap: () => _pickDueDate(setStateDialog),
+                        child: InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: "Due Date",
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.schedule),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(df.format(dueDate)),
+                              const Icon(
+                                Icons.edit_calendar,
+                                color: Colors.teal,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
                       TextFormField(
                         controller: nameCtrl,
                         decoration: const InputDecoration(
@@ -420,6 +650,8 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                             'shipping_address': shipCtrl.text.trim(),
                             'note': noteCtrl.text.trim(),
                             'gst_percentage': gst,
+                            'invoice_date': invoiceDate.toIso8601String(),
+                            'due_date': dueDate.toIso8601String(),
                             'updated_at': FieldValue.serverTimestamp(),
                           });
                       if (ctx.mounted) Navigator.pop(ctx);
@@ -1134,6 +1366,33 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                               Text(
                                 "Total: ₹${(data['grand_total'] ?? 0).toStringAsFixed(2)}",
                               ),
+
+                              // 🟢 Added: Balance Due line
+                              Builder(
+                                builder: (_) {
+                                  final total = (data['grand_total'] ?? 0)
+                                      .toDouble();
+                                  final paid = (data['paid_amount'] ?? 0)
+                                      .toDouble();
+                                  final balance = (total - paid).clamp(
+                                    0,
+                                    double.infinity,
+                                  );
+
+                                  final balanceColor = balance > 0
+                                      ? Colors.redAccent
+                                      : Colors.green.shade600;
+
+                                  return Text(
+                                    "Balance Due: ₹${balance.toStringAsFixed(2)}",
+                                    style: TextStyle(
+                                      color: balanceColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  );
+                                },
+                              ),
+
                               Text(
                                 "Status: $status",
                                 style: TextStyle(
@@ -1172,14 +1431,12 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                     case 'pdf':
                                       _generatePDF(doc.id, data);
                                       break;
-
                                     case 'pay':
                                       _addPayment(doc.id, data);
                                       break;
                                     case 'challan':
                                       generateDeliveryChallanPDF(data);
                                       break;
-
                                     case 'delete':
                                       _deleteInvoice(doc.id);
                                       break;

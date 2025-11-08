@@ -22,7 +22,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   String? get _uid => _auth.currentUser?.uid;
 
-  /// 🔹 Stream customers with outstanding
   Stream<List<Map<String, dynamic>>> _fetchCustomers() async* {
     if (_uid == null) yield [];
     final stream = _firestore
@@ -43,7 +42,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
     final outstanding = (customer['outstanding'] ?? 0).toDouble();
 
     final amountController = TextEditingController();
+    final upiIdController = TextEditingController();
+    final chequeController = TextEditingController();
     String paymentMode = 'Cash';
+    bool showQR = false;
+    String qrLink = '';
 
     await showDialog(
       context: context,
@@ -61,7 +64,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 0,
                 double.infinity,
               );
-
               final paymentData = {
                 'customer_name': name,
                 'customer_id': customer['id'],
@@ -69,6 +71,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 'payment_mode': paymentMode,
                 'previous_outstanding': outstanding,
                 'new_outstanding': newOutstanding,
+                'upi_id': upiIdController.text.trim(),
+                'cheque_no': chequeController.text.trim(),
                 'created_at': FieldValue.serverTimestamp(),
               };
 
@@ -86,13 +90,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
                     .doc(customer['id'])
                     .update({'outstanding': newOutstanding});
 
-                // Update invoice statuses based on the new outstanding amount
                 await _updateInvoiceStatuses(name, newOutstanding);
 
                 if (context.mounted) Navigator.pop(context);
                 _showSnack("✅ Payment recorded successfully!", success: true);
               } catch (e) {
-                if (context.mounted) Navigator.pop(context);
                 _showSnack("❌ Failed to save payment. Please try again.");
               }
             }
@@ -100,98 +102,180 @@ class _PaymentScreenState extends State<PaymentScreen> {
             void generateQR() async {
               final amt = double.tryParse(amountController.text.trim()) ?? 0;
               if (amt <= 0) {
-                _showSnack("Enter a valid amount before generating QR");
+                _showSnack("Enter amount before generating QR");
                 return;
               }
 
-              Navigator.pop(context);
-              await _showQrDialog(name, amt.toString());
+              String? upiId = upiIdController.text.trim();
+              if (upiId.isEmpty) {
+                final companyRef = _firestore
+                    .collection('users')
+                    .doc(_uid)
+                    .collection('company')
+                    .doc('details');
+                final companyDoc = await companyRef.get();
+                upiId = companyDoc.data()?['upi_id'] ?? '';
+
+                if (upiId!.isEmpty) {
+                  _showSnack("⚠️ Please enter your UPI ID first");
+                  return;
+                }
+              }
+
+              final link =
+                  "upi://pay?pa=$upiId&pn=${Uri.encodeComponent(name)}&am=$amt&cu=INR";
+
+              setStateDialog(() {
+                qrLink = link;
+                showQR = true;
+              });
             }
 
             return Dialog(
-              insetPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 24,
-              ),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
               ),
+              insetPadding: const EdgeInsets.symmetric(horizontal: 20),
               child: Padding(
                 padding: const EdgeInsets.all(20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      "Record Payment",
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      "Customer: $name\nOutstanding: ₹${outstanding.toStringAsFixed(2)}",
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.black54),
-                    ),
-                    const SizedBox(height: 20),
-                    TextField(
-                      controller: amountController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      decoration: const InputDecoration(
-                        labelText: "Amount Paid",
-                        prefixIcon: Icon(Icons.currency_rupee),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 15),
-                    DropdownButtonFormField<String>(
-                      value: paymentMode,
-                      items: const [
-                        DropdownMenuItem(value: 'Cash', child: Text('Cash')),
-                        DropdownMenuItem(value: 'Card', child: Text('Card')),
-                        DropdownMenuItem(value: 'UPI', child: Text('UPI')),
-                        DropdownMenuItem(value: 'QR', child: Text('QR Code')),
-                        DropdownMenuItem(
-                          value: 'Cheque',
-                          child: Text('Cheque'),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        "💰 Record Payment",
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
                         ),
-                      ],
-                      onChanged: (v) => setStateDialog(() => paymentMode = v!),
-                      decoration: const InputDecoration(
-                        labelText: "Payment Mode",
-                        prefixIcon: Icon(Icons.payment_rounded),
-                        border: OutlineInputBorder(),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: savePayment,
-                            icon: const Icon(Icons.save),
-                            label: const Text("Save"),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
-                              minimumSize: const Size(double.infinity, 46),
-                            ),
+                      const SizedBox(height: 8),
+                      Text(
+                        "Customer: $name\nOutstanding: ₹${outstanding.toStringAsFixed(2)}",
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: amountController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: "Amount Paid",
+                          prefixIcon: Icon(Icons.currency_rupee),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Payment Mode Dropdown
+                      DropdownButtonFormField<String>(
+                        value: paymentMode,
+                        items: const [
+                          DropdownMenuItem(value: 'Cash', child: Text('Cash')),
+                          DropdownMenuItem(value: 'Card', child: Text('Card')),
+                          DropdownMenuItem(value: 'UPI', child: Text('UPI')),
+                          DropdownMenuItem(value: 'DD', child: Text('DD')),
+                          DropdownMenuItem(
+                            value: 'Cheque',
+                            child: Text('Cheque'),
                           ),
+                        ],
+                        onChanged: (v) => setStateDialog(() {
+                          paymentMode = v!;
+                          showQR = false; // reset QR
+                        }),
+                        decoration: const InputDecoration(
+                          labelText: "Payment Mode",
+                          prefixIcon: Icon(Icons.payment_rounded),
+                          border: OutlineInputBorder(),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: generateQR,
-                            icon: const Icon(Icons.qr_code_2),
-                            label: const Text("QR"),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blueAccent,
-                              minimumSize: const Size(double.infinity, 46),
-                            ),
+                      ),
+
+                      // Optional fields based on mode
+                      if (paymentMode == 'UPI') ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: upiIdController,
+                          decoration: const InputDecoration(
+                            labelText: "UPI ID (optional)",
+                            prefixIcon: Icon(Icons.qr_code_2),
+                            border: OutlineInputBorder(),
                           ),
                         ),
                       ],
-                    ),
-                  ],
+                      if (paymentMode == 'Cheque') ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: chequeController,
+                          decoration: const InputDecoration(
+                            labelText: "Cheque No (optional)",
+                            prefixIcon: Icon(Icons.numbers),
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(height: 18),
+
+                      // QR Section (only show if generated)
+                      if (showQR) ...[
+                        const Divider(),
+                        const SizedBox(height: 8),
+                        const Text(
+                          "Scan to Pay",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        QrImageView(
+                          data: qrLink,
+                          size: 200,
+                          backgroundColor: Colors.white,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          "₹${amountController.text.trim()} for $name",
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: savePayment,
+                              icon: const Icon(Icons.save),
+                              label: const Text("Save"),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green,
+                                minimumSize: const Size(double.infinity, 46),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          if (paymentMode == 'UPI')
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: generateQR,
+                                icon: const Icon(Icons.qr_code_2),
+                                label: const Text("Generate"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blueAccent,
+                                  minimumSize: const Size(double.infinity, 46),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -201,48 +285,34 @@ class _PaymentScreenState extends State<PaymentScreen> {
     );
   }
 
-  /// 🔹 Update Invoice Statuses based on outstanding amount
   Future<void> _updateInvoiceStatuses(
     String customerName,
     double newOutstanding,
   ) async {
     if (_uid == null) return;
-
     final invoicesRef = _firestore
         .collection('users')
         .doc(_uid)
         .collection('invoices');
-
     try {
-      // Get all invoices for this customer
       final snapshot = await invoicesRef
           .where('customer_name', isEqualTo: customerName)
           .get();
-
       for (var doc in snapshot.docs) {
         final data = doc.data();
         final currentStatus = data['status'] as String?;
-
-        // Skip if already fully paid and closed
-        if (currentStatus == 'Closed') {
-          continue;
-        }
+        if (currentStatus == 'Closed') continue;
 
         final grandTotal = (data['grand_total'] ?? 0).toDouble();
         String newStatus;
-
         if (newOutstanding == 0) {
-          // Fully paid - mark as Closed
           newStatus = 'Closed';
         } else if (newOutstanding < grandTotal) {
-          // Partially paid
           newStatus = 'Partially Paid';
         } else {
-          // Still pending (outstanding >= grand total)
           newStatus = 'Pending';
         }
 
-        // Update only if status changed
         if (currentStatus != newStatus) {
           await invoicesRef.doc(doc.id).update({'status': newStatus});
         }
@@ -252,101 +322,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
     }
   }
 
-  /// 🔹 Show QR Dialog
-  Future<void> _showQrDialog(String name, String amount) async {
-    final companyRef = _firestore
-        .collection('users')
-        .doc(_uid)
-        .collection('company')
-        .doc('details');
-
-    final companyDoc = await companyRef.get();
-    String? upiId = companyDoc.data()?['upi_id'];
-
-    if (upiId == null || upiId.isEmpty) {
-      // Ask user for UPI ID
-      final upiController = TextEditingController();
-      final result = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text("Add UPI ID"),
-          content: TextField(
-            controller: upiController,
-            decoration: const InputDecoration(
-              labelText: "Enter your UPI ID",
-              hintText: "example@upi",
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancel"),
-            ),
-            ElevatedButton(
-              onPressed: () =>
-                  Navigator.pop(context, upiController.text.trim()),
-              child: const Text("Save"),
-            ),
-          ],
-        ),
-      );
-
-      if (result == null || result.isEmpty) {
-        _showSnack("⚠️ UPI ID is required to generate QR");
-        return;
-      }
-
-      upiId = result;
-      await companyRef.set({'upi_id': upiId}, SetOptions(merge: true));
-      _showSnack("✅ UPI ID saved successfully", success: true);
-    }
-
-    final upiLink =
-        "upi://pay?pa=$upiId&pn=${Uri.encodeComponent(name)}&am=$amount&cu=INR";
-
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  "Scan to Pay",
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 16),
-                QrImageView(
-                  data: upiLink,
-                  size: 220,
-                  backgroundColor: Colors.white,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  "₹$amount for $name",
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text("Close"),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 🔹 Helper Snack
   void _showSnack(String msg, {bool success = false}) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -357,7 +332,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
     );
   }
 
-  /// 🔹 Main UI
   @override
   Widget build(BuildContext context) {
     if (widget.qrOnly && widget.upiUrl != null) {
