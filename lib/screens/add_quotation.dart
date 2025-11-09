@@ -972,18 +972,23 @@ class _AddQuotationScreenState extends State<AddQuotationScreen> {
                     tooltip: "Call this number",
                     onPressed: () async {
                       final number = _mobileController.text.trim();
-                      if (number.isEmpty) {
+                      if (number.isEmpty || number.length < 8) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text('Please enter a mobile number first'),
+                            content: Text(
+                              'Please enter a valid mobile number first',
+                            ),
                           ),
                         );
                         return;
                       }
                       final Uri uri = Uri(scheme: 'tel', path: number);
-                      if (await canLaunchUrl(uri)) {
-                        await launchUrl(uri);
-                      } else {
+                      try {
+                        await launchUrl(
+                          uri,
+                          mode: LaunchMode.externalApplication,
+                        ); // Ensures opening in dialer
+                      } catch (e) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
                             content: Text('Could not open dialer'),

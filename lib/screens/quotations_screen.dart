@@ -420,7 +420,8 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                           }
                                                         },
                                                       ),
-                                                      Expanded(
+                                                      Flexible(
+                                                        flex: 4,
                                                         child: TextFormField(
                                                           controller: qtyCtrl,
                                                           textAlign:
@@ -429,13 +430,18 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                               const TextInputType.numberWithOptions(
                                                                 decimal: true,
                                                               ),
-                                                          decoration:
-                                                              const InputDecoration(
-                                                                labelText:
-                                                                    "Qty",
-                                                                border:
-                                                                    OutlineInputBorder(),
-                                                              ),
+                                                          decoration: const InputDecoration(
+                                                            labelText: "Qty",
+                                                            border:
+                                                                OutlineInputBorder(),
+                                                            isDense:
+                                                                true, // Reduces height/padding
+                                                            contentPadding:
+                                                                EdgeInsets.symmetric(
+                                                                  vertical: 8,
+                                                                  horizontal: 8,
+                                                                ), // Minimal padding
+                                                          ),
                                                           onChanged: (v) {
                                                             item['qty'] =
                                                                 double.tryParse(
@@ -446,6 +452,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                           },
                                                         ),
                                                       ),
+
                                                       IconButton(
                                                         icon: const Icon(
                                                           Icons.add_circle,
@@ -845,6 +852,16 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
             .toList() ??
         [];
 
+    // Persist controllers for editing fields (attach if missing)
+    for (final item in items) {
+      item['qtyCtrl'] ??= TextEditingController(
+        text: ((item['qty'] ?? 1).toDouble()).toString(),
+      );
+      item['rateCtrl'] ??= TextEditingController(
+        text: ((item['rate'] ?? 0).toDouble()).toStringAsFixed(2),
+      );
+    }
+
     double total = (data['grand_total'] ?? 0).toDouble();
 
     await showDialog(
@@ -858,13 +875,13 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                 0,
                 (sum, i) =>
                     sum +
-                    ((i['qty'] ?? 1).toDouble() * (i['rate'] ?? 0).toDouble()),
+                    ((double.tryParse(i['qtyCtrl'].text) ?? 1.0) *
+                        (double.tryParse(i['rateCtrl'].text) ?? 0.0)),
               );
               setStateDialog(() {});
             }
 
             Future<void> addProduct(String name, double rate) async {
-              // Check if product already exists
               final exists = products.any(
                 (p) =>
                     (p['name'] ?? '').toString().toLowerCase() ==
@@ -887,7 +904,14 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
             }
 
             void addItem() {
-              items.add({'item': '', 'qty': 1.0, 'rate': 0.0});
+              final newItem = {
+                'item': '',
+                'qty': 1.0,
+                'rate': 0.0,
+                'qtyCtrl': TextEditingController(text: '1'),
+                'rateCtrl': TextEditingController(text: '0.00'),
+              };
+              items.add(newItem);
               recalcTotal();
             }
 
@@ -895,7 +919,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
               child: Scaffold(
                 backgroundColor: Colors.grey.shade100,
                 appBar: AppBar(
-                  backgroundColor: Color(0xFF1F3A5F),
+                  backgroundColor: const Color(0xFF1F3A5F),
                   title: const Text("Edit Quotation"),
                   actions: [
                     IconButton(
@@ -911,7 +935,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                       key: formKey,
                       child: Column(
                         children: [
-                          // 🟠 Customer info
+                          // Customer info
                           Row(
                             children: [
                               Expanded(
@@ -947,7 +971,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                           ),
                           const SizedBox(height: 20),
 
-                          // 🟠 Items header
+                          // Items header
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
@@ -971,7 +995,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                           ),
                           const SizedBox(height: 10),
 
-                          // 🟠 Item list
+                          // Item list
                           Expanded(
                             child: SingleChildScrollView(
                               child: Column(
@@ -979,14 +1003,10 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                   final index = entry.key;
                                   final item = entry.value;
 
-                                  final qtyCtrl = TextEditingController(
-                                    text: ((item['qty'] ?? 1).toDouble())
-                                        .toString(),
-                                  );
-                                  final rateCtrl = TextEditingController(
-                                    text: ((item['rate'] ?? 0).toDouble())
-                                        .toStringAsFixed(2),
-                                  );
+                                  final qtyCtrl =
+                                      item['qtyCtrl'] as TextEditingController;
+                                  final rateCtrl =
+                                      item['rateCtrl'] as TextEditingController;
 
                                   return Card(
                                     margin: const EdgeInsets.symmetric(
@@ -1000,7 +1020,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                       padding: const EdgeInsets.all(12.0),
                                       child: Column(
                                         children: [
-                                          // 🟢 Autocomplete Product Field
+                                          // Autocomplete Product Field
                                           Row(
                                             children: [
                                               Expanded(
@@ -1009,9 +1029,8 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                   displayStringForOption: (p) =>
                                                       p['name'] ?? '',
                                                   optionsBuilder: (text) {
-                                                    if (text.text.isEmpty) {
+                                                    if (text.text.isEmpty)
                                                       return const Iterable.empty();
-                                                    }
                                                     final query = text.text
                                                         .toLowerCase();
                                                     return products.where(
@@ -1113,7 +1132,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                                     await addProduct(
                                                       item['item'] ?? '',
                                                       val,
-                                                    ); // ✅ Add to DB if new
+                                                    );
                                                     recalcTotal();
                                                   },
                                                 ),
@@ -1173,15 +1192,32 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                 icon: const Icon(Icons.save),
                                 label: const Text("Save Changes"),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: Color(0xFF1F3A5F),
+                                  backgroundColor: const Color(0xFF1F3A5F),
                                   foregroundColor: Colors.white,
                                 ),
                                 onPressed: () async {
                                   if (!formKey.currentState!.validate()) return;
+                                  // Extract current values from controllers before saving:
+                                  for (final item in items) {
+                                    item['qty'] =
+                                        double.tryParse(item['qtyCtrl'].text) ??
+                                        1.0;
+                                    item['rate'] =
+                                        double.tryParse(
+                                          item['rateCtrl'].text,
+                                        ) ??
+                                        0.0;
+                                  }
                                   await _updateQuotation(quoteId, {
                                     'customer_name': customerCtrl.text.trim(),
                                     'billing_address': addressCtrl.text.trim(),
-                                    'items': items,
+                                    'items': items
+                                        .map(
+                                          (e) => Map<String, dynamic>.from(e)
+                                            ..remove('qtyCtrl')
+                                            ..remove('rateCtrl'),
+                                        )
+                                        .toList(),
                                     'grand_total': total,
                                   });
                                   if (ctx.mounted) Navigator.pop(ctx);
