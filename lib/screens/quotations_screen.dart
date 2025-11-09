@@ -644,6 +644,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
   }
 
   // 🔹 Convert Function - SAFE & CLEANED VERSION
+  // 🔹 Safe & Accurate Conversion Function
   Future<void> _convertToInvoice(
     String quoteId,
     Map<String, dynamic> data,
@@ -660,12 +661,10 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
           .collection('users')
           .doc(uid)
           .collection('invoices');
-
       final customersRef = firestore
           .collection('users')
           .doc(uid)
           .collection('customers');
-
       final quotationRef = firestore
           .collection('users')
           .doc(uid)
@@ -681,20 +680,37 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
       final invoiceDate = DateTime.now();
       final dueDate = invoiceDate.add(const Duration(days: 7));
 
-      // 🧹 Clean TextEditingControllers before saving
+      // 🧹 Recalculate items and totals
       final List<Map<String, dynamic>> cleanedItems = [];
+      double subtotal = 0.0;
+
       if (data['items'] != null && data['items'] is List) {
         for (var i in data['items']) {
+          final qty = (i['qty'] ?? 1).toDouble();
+          final rate = (i['rate'] ?? 0).toDouble();
+          final lineTotal = qty * rate;
+          subtotal += lineTotal;
+
           cleanedItems.add({
             'item': i['item'] ?? '',
-            'qty': (i['qty'] ?? 1).toDouble(),
-            'rate': (i['rate'] ?? 0).toDouble(),
+            'qty': qty,
+            'rate': rate,
+            'subtotal': lineTotal,
           });
         }
       }
 
-      final double grandTotal = (data['grand_total'] ?? 0).toDouble();
-      final String customerName = data['customer_name'] ?? 'Unknown';
+      // 🧮 Use GST from quotation if available
+      double gstPercentage = (data['gst_percentage'] ?? 18).toDouble();
+      double gstAmount = (data['gst_amount'] != null)
+          ? (data['gst_amount'] as num).toDouble()
+          : (subtotal * gstPercentage / 100);
+
+      final grandTotal = subtotal + gstAmount;
+
+      // 🧾 Customer details
+      final customerName = (data['customer_name'] ?? 'Unknown').trim();
+      final billingAddress = (data['billing_address'] ?? '').trim();
 
       // 💰 Prepare invoice data
       final newInvoiceRef = invoicesRef.doc();
@@ -709,9 +725,12 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
         'quotation_id': quoteId,
         'created_at': FieldValue.serverTimestamp(),
         'customer_name': customerName,
-        'billing_address': data['billing_address'] ?? '',
+        'billing_address': billingAddress,
+        'gst_percentage': gstPercentage,
+        'gst_amount': gstAmount,
+        'subtotal': subtotal,
         'grand_total': grandTotal,
-        'items': cleanedItems, // ✅ Cleaned version
+        'items': cleanedItems,
       };
 
       // 🧠 Save invoice
@@ -720,7 +739,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
       // 🔄 Update quotation status
       await quotationRef.update({'status': 'Converted'});
 
-      // 👤 Update customer outstanding
+      // 👤 Update or create customer record
       final customersQuery = await customersRef
           .where('name', isEqualTo: customerName)
           .limit(1)
@@ -730,7 +749,6 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
         final customerDoc = customersQuery.docs.first;
         final currentOutstanding = (customerDoc.data()['outstanding'] ?? 0)
             .toDouble();
-
         await customerDoc.reference.update({
           'outstanding': currentOutstanding + grandTotal,
         });
@@ -742,6 +760,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
         });
       }
 
+      // ✅ Success
       _showSnack(
         '✅ Quotation converted to Invoice #$invoiceNumber!',
         success: true,

@@ -317,7 +317,7 @@ class PdfService {
             items[i]['item'] ?? '',
             '${items[i]['qty'] ?? 0}',
             '₹${(items[i]['rate'] ?? 0).toStringAsFixed(2)}',
-            '₹${(items[i]['lineTotal'] ?? 0).toStringAsFixed(2)}',
+            '₹${((items[i]['subtotal'] ?? items[i]['lineTotal'] ?? 0).toStringAsFixed(2))}',
           ],
         ),
       ],
@@ -326,12 +326,26 @@ class PdfService {
 
   // ---------- TOTALS ----------
   static pw.Widget _buildTotals(Map<String, dynamic> invoice) {
-    final subtotal = (invoice['subtotal'] ?? 0).toDouble();
+    final List<Map<String, dynamic>> items = List<Map<String, dynamic>>.from(
+      invoice['items'] ?? [],
+    );
+
+    // 🔹 Recalculate subtotal from items if not available
+    final double subtotal = items.fold(
+      0.0,
+      (sum, item) =>
+          sum + (item['subtotal'] ?? item['lineTotal'] ?? 0).toDouble(),
+    );
+
+    // 🔹 GST (if applicable)
     double gst = (invoice['gst_amount'] ?? 0).toDouble();
     if (gst == 0 && invoice['gst_percentage'] != null) {
       gst = subtotal * ((invoice['gst_percentage'] as num).toDouble() / 100);
     }
-    final grandTotal = subtotal + gst;
+
+    // 🔹 Prefer stored grand_total if exists
+    final double grandTotal = (invoice['grand_total'] ?? subtotal + gst)
+        .toDouble();
 
     return pw.Align(
       alignment: pw.Alignment.centerRight,

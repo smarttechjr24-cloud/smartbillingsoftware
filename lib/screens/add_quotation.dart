@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:flutter/services.dart';
 import 'package:smartbilling/main.dart';
 import 'package:smartbilling/screens/profile_screen.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class AddQuotationScreen extends StatefulWidget {
   const AddQuotationScreen({Key? key}) : super(key: key);
@@ -243,7 +244,6 @@ class _AddQuotationScreenState extends State<AddQuotationScreen> {
       "Box",
       "Each",
       ...customUOMs,
-      "➕ Add New UOM",
     ];
 
     final taxTypeItems = const ['With Tax', 'Without Tax'];
@@ -438,25 +438,43 @@ class _AddQuotationScreenState extends State<AddQuotationScreen> {
                                 flex: 3,
                                 child: DropdownButtonFormField<String>(
                                   isExpanded: true,
-                                  value: selectedUnit,
-                                  items: uomItems
-                                      .map(
-                                        (e) => DropdownMenuItem(
-                                          value: e,
-                                          child: Text(
-                                            e,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
+                                  value: uomItems.contains(selectedUnit)
+                                      ? selectedUnit
+                                      : null,
+                                  items: [
+                                    ...uomItems.map(
+                                      (e) => DropdownMenuItem(
+                                        value: e,
+                                        child: Text(
+                                          e,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
-                                      )
-                                      .toList(),
+                                      ),
+                                    ),
+                                    const DropdownMenuItem(
+                                      value: "➕ Add New UOM",
+                                      child: Text(
+                                        "➕ Add New UOM",
+                                        style: TextStyle(
+                                          fontStyle: FontStyle.italic,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                   onChanged: (v) async {
                                     if (v == "➕ Add New UOM") {
                                       final newUOM = await _showAddUOMDialog();
+
                                       if (newUOM != null && newUOM.isNotEmpty) {
-                                        setDialogState(
-                                          () => selectedUnit = newUOM,
-                                        );
+                                        setDialogState(() {
+                                          // Avoid duplicates
+                                          if (!uomItems.contains(newUOM)) {
+                                            uomItems.add(newUOM);
+                                          }
+
+                                          // Set the new item as selected
+                                          selectedUnit = newUOM;
+                                        });
                                       }
                                     } else {
                                       setDialogState(() => selectedUnit = v);
@@ -943,12 +961,55 @@ class _AddQuotationScreenState extends State<AddQuotationScreen> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _mobileController,
-                decoration: _inputDecoration(
-                  "Mobile Number",
-                  Icons.phone_outlined,
+                decoration: InputDecoration(
+                  labelText: "Mobile Number",
+                  prefixIcon: Icon(
+                    Icons.phone_outlined,
+                    color: primaryColor.withOpacity(0.7),
+                  ),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.call, color: Colors.teal),
+                    tooltip: "Call this number",
+                    onPressed: () async {
+                      final number = _mobileController.text.trim();
+                      if (number.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Please enter a mobile number first'),
+                          ),
+                        );
+                        return;
+                      }
+                      final Uri uri = Uri(scheme: 'tel', path: number);
+                      if (await canLaunchUrl(uri)) {
+                        await launchUrl(uri);
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Could not open dialer'),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(
+                      color: primaryColor.withOpacity(0.3),
+                    ),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: accentColor, width: 2),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    vertical: 16,
+                    horizontal: 12,
+                  ),
                 ),
                 keyboardType: TextInputType.phone,
               ),
+
               const SizedBox(height: 12),
               TextFormField(
                 controller: _billingAddressController,

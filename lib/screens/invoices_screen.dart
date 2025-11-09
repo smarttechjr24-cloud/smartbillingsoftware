@@ -57,6 +57,9 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       final invoicesRef = userRef.collection('invoices');
       final customersRef = userRef.collection('customers');
       final quotationsRef = userRef.collection('quotations');
+      final receiptsRef = userRef.collection(
+        'receipts',
+      ); // 👈 Added for payment check
 
       // 1️⃣ Fetch the invoice document
       final invoiceDoc = await invoicesRef.doc(id).get();
@@ -70,7 +73,18 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       final double grandTotal = (invoiceData['grand_total'] ?? 0.0).toDouble();
       final String? quotationId = invoiceData['quotation_id'];
 
-      // 2️⃣ If invoice was created from a quotation, reset it back to "Open"
+      // 2️⃣ Check if any receipts are linked to this invoice
+      final receiptsSnap = await receiptsRef
+          .where('invoice_id', isEqualTo: id)
+          .limit(1)
+          .get();
+
+      if (receiptsSnap.docs.isNotEmpty) {
+        _showSnack('⚠️ Cannot delete invoice — payment receipt exists!');
+        return;
+      }
+
+      // 3️⃣ If invoice was created from a quotation, reset it back to "Open"
       if (quotationId != null && quotationId.isNotEmpty) {
         final qSnap = await quotationsRef
             .where('id', isEqualTo: quotationId)
@@ -82,7 +96,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
         }
       }
 
-      // 3️⃣ Reduce customer's outstanding balance
+      // 4️⃣ Reduce customer's outstanding balance
       if (customerName.isNotEmpty) {
         final custSnap = await customersRef
             .where('name', isEqualTo: customerName)
@@ -101,7 +115,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
         }
       }
 
-      // 4️⃣ Delete the invoice
+      // 5️⃣ Delete the invoice (only if no receipts)
       await invoiceDoc.reference.delete();
 
       _showSnack('✅ Invoice deleted successfully', success: true);
@@ -116,6 +130,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     bool printDirectly = false,
   }) async {
     try {
+      print(data);
       await PdfService.generateAndOpenPDF(
         id,
         cachedData: data,
@@ -1430,6 +1445,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                       break;
                                     case 'pdf':
                                       _generatePDF(doc.id, data);
+
                                       break;
                                     case 'pay':
                                       _addPayment(doc.id, data);
@@ -1442,28 +1458,38 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                       break;
                                   }
                                 },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem(
                                     value: 'view',
                                     child: Text("View"),
                                   ),
-                                  PopupMenuItem(
+                                  const PopupMenuItem(
                                     value: 'edit',
                                     child: Text("Edit"),
                                   ),
-                                  PopupMenuItem(
+                                  const PopupMenuItem(
                                     value: 'pdf',
                                     child: Text("Download PDF"),
                                   ),
-                                  PopupMenuItem(
+                                  const PopupMenuItem(
                                     value: 'pay',
                                     child: Text("Add Payment"),
                                   ),
                                   PopupMenuItem(
                                     value: 'delete',
-                                    child: Text("Delete"),
+                                    enabled: status == 'Pending',
+                                    child: Text(
+                                      "Delete",
+                                      style: TextStyle(
+                                        color: status == 'Pending'
+                                            ? Colors.red
+                                            : Colors.grey,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                   ),
-                                  PopupMenuItem(
+
+                                  const PopupMenuItem(
                                     value: 'challan',
                                     child: Text("Delivery Challan"),
                                   ),
