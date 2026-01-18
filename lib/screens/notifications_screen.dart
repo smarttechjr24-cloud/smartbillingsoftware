@@ -3,8 +3,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 
-class NotificationsScreen extends StatelessWidget {
+class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({Key? key}) : super(key: key);
+
+  @override
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _generateAutoNotifications();
+  }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _getUserNotifications() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -22,6 +33,79 @@ class NotificationsScreen extends StatelessWidget {
     if (ts == null) return '';
     final date = ts.toDate();
     return DateFormat('dd MMM yyyy, hh:mm a').format(date);
+  }
+
+  // ================= ✅ AUTO NOTIFICATION CREATOR =================
+  Future<void> _generateAutoNotifications() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+
+    final today = DateTime.now();
+    final tomorrow = DateTime(today.year, today.month, today.day + 1);
+
+    // -------- INVOICE DUE REMINDER --------
+    final invoiceSnap = await userRef.collection('invoices').get();
+
+    for (var doc in invoiceSnap.docs) {
+      final data = doc.data();
+      if (!data.containsKey('due_date')) continue;
+
+      final dueDate = DateTime.tryParse(data['due_date']);
+      if (dueDate == null) continue;
+
+      if (DateUtils.isSameDay(dueDate, tomorrow)) {
+        final message =
+            'Invoice ${data['invoice_number'] ?? ''} for ${data['customer_name']} is due tomorrow.';
+
+        final existing = await userRef
+            .collection('notifications')
+            .where('message', isEqualTo: message)
+            .get();
+
+        if (existing.docs.isEmpty) {
+          await userRef.collection('notifications').add({
+            'title': 'Invoice Due Tomorrow',
+            'message': message,
+            'type': 'invoice',
+            'read': false,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+        }
+      }
+    }
+
+    // -------- PLAN EXPIRY REMINDER --------
+    final userDoc = await userRef.get();
+    final planEndRaw = userDoc.data()?['plan_end_date'];
+
+    if (planEndRaw != null) {
+      final planEnd = DateTime.tryParse(planEndRaw);
+
+      if (planEnd != null) {
+        final diff = planEnd.difference(today).inDays;
+
+        if (diff <= 3 && diff >= 0) {
+          final message = 'Your plan will expire in $diff day(s). Renew soon.';
+
+          final existing = await userRef
+              .collection('notifications')
+              .where('message', isEqualTo: message)
+              .get();
+
+          if (existing.docs.isEmpty) {
+            await userRef.collection('notifications').add({
+              'title': 'Plan Expiring Soon',
+              'message': message,
+              'type': 'reminder',
+              'read': false,
+              'timestamp': FieldValue.serverTimestamp(),
+            });
+          }
+        }
+      }
+    }
   }
 
   Future<void> _markAsRead(String docId) async {
@@ -83,31 +167,7 @@ class NotificationsScreen extends StatelessWidget {
             tooltip: "Clear all",
             icon: const Icon(Icons.delete_sweep_rounded),
             onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text("Clear all notifications?"),
-                  content: const Text(
-                    "This will permanently delete all notifications.",
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text("Cancel"),
-                    ),
-                    ElevatedButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.redAccent,
-                      ),
-                      child: const Text("Clear All"),
-                    ),
-                  ],
-                ),
-              );
-              if (confirm == true) {
-                await _clearAllNotifications(context);
-              }
+              await _clearAllNotifications(context);
             },
           ),
         ],
@@ -115,26 +175,14 @@ class NotificationsScreen extends StatelessWidget {
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: _getUserNotifications(),
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
           if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return const Center(
-              child: Text(
-                "🎉 No notifications yet.\nEverything looks good!",
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey, fontSize: 16),
-              ),
-            );
+            return const Center(child: Text("🎉 No notifications"));
           }
 
           final notifications = snapshot.data!.docs;
 
-          return ListView.separated(
-            padding: const EdgeInsets.all(16.0),
+          return ListView.builder(
             itemCount: notifications.length,
-            separatorBuilder: (_, __) => const Divider(),
             itemBuilder: (context, index) {
               final doc = notifications[index];
               final data = doc.data();
@@ -142,87 +190,55 @@ class NotificationsScreen extends StatelessWidget {
               final message = data['message'] ?? '';
               final timestamp = data['timestamp'] as Timestamp?;
               final isRead = data['read'] ?? false;
-              final type = data['type'] ?? "general";
-
-              final icon = switch (type) {
-                "reminder" => Icons.alarm_rounded,
-                "payment" => Icons.currency_rupee_rounded,
-                "invoice" => Icons.receipt_long_rounded,
-                _ => Icons.notifications_active_rounded,
-              };
-
-              final color = switch (type) {
-                "reminder" => Colors.orangeAccent,
-                "payment" => Colors.green,
-                "invoice" => Colors.blueAccent,
-                _ => Colors.indigo,
-              };
 
               return Dismissible(
-                key: ValueKey(doc.id),
+                key: Key(doc.id),
                 direction: DismissDirection.endToStart,
                 background: Container(
                   alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: 24),
-                  color: Colors.redAccent,
+                  padding: const EdgeInsets.only(right: 20),
+                  color: Colors.red,
                   child: const Icon(Icons.delete, color: Colors.white),
                 ),
-                confirmDismiss: (_) async {
-                  await _deleteNotification(doc.id);
-                  return true;
+                onDismissed: (direction) {
+                  _deleteNotification(doc.id);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Notification deleted')),
+                  );
                 },
                 child: Card(
-                  elevation: isRead ? 1 : 3,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
                   child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: color.withOpacity(0.15),
-                      child: Icon(icon, color: color),
-                    ),
                     title: Text(
                       title,
                       style: TextStyle(
-                        fontWeight: isRead
-                            ? FontWeight.normal
-                            : FontWeight.bold,
-                        color: isRead ? Colors.black54 : Colors.black87,
+                        fontWeight: isRead ? FontWeight.normal : FontWeight.bold,
                       ),
                     ),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (message.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              message,
-                              style: const TextStyle(
-                                color: Colors.black87,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        const SizedBox(height: 4),
+                        Text(message),
                         Text(
                           _formatTimestamp(timestamp),
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey,
-                          ),
+                          style: const TextStyle(fontSize: 11),
                         ),
                       ],
                     ),
-                    trailing: isRead
-                        ? null
-                        : TextButton(
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!isRead)
+                          TextButton(
                             onPressed: () => _markAsRead(doc.id),
-                            child: const Text(
-                              "Mark Read",
-                              style: TextStyle(fontSize: 13),
-                            ),
+                            child: const Text("Mark Read"),
                           ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, color: Colors.red),
+                          onPressed: () => _deleteNotification(doc.id),
+                          tooltip: 'Delete',
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );

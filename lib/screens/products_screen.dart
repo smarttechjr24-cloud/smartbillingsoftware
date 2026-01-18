@@ -4,7 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart'; // For TextInputFormatter
 
 // ======================================================================
-// 1. DATA MODEL (Best Practice: Use a Model)
+// 1. DATA MODEL
 // ======================================================================
 class ProductModel {
   final String id;
@@ -29,6 +29,7 @@ class ProductModel {
     this.updatedAt,
   });
 
+  // Backward Compatibility: Handles documents where hsn_code or gst_percent might be missing
   factory ProductModel.fromFirestore(
     DocumentSnapshot<Map<String, dynamic>> doc,
   ) {
@@ -38,8 +39,10 @@ class ProductModel {
       name: data['name'] as String? ?? 'N/A',
       rate: (data['rate'] as num?)?.toDouble() ?? 0.0,
       unit: data['unit'] as String? ?? 'Unit',
+      // Default to empty string if missing, but form will force update on edit
       hsnCode: data['hsn_code'] as String? ?? '',
       stock: (data['stock'] as num?)?.toDouble() ?? 0.0,
+      // Default to 0.0 if missing
       gstPercent: (data['gst_percent'] as num?)?.toDouble() ?? 0.0,
       createdAt: data['created_at'] as Timestamp?,
       updatedAt: data['updated_at'] as Timestamp?,
@@ -84,7 +87,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
   final _auth = FirebaseAuth.instance;
   String? get _uid => _auth.currentUser?.uid;
 
-  // New: Search controller and query
   final TextEditingController _searchCtrl = TextEditingController();
   String _searchQuery = '';
 
@@ -104,25 +106,17 @@ class _ProductsScreenState extends State<ProductsScreen> {
     super.dispose();
   }
 
-  // --- Firestore Stream with Filtering ---
   Stream<QuerySnapshot<Map<String, dynamic>>> _getProducts() {
     if (_uid == null) return const Stream.empty();
-    // Base query: All products ordered by name
     Query<Map<String, dynamic>> baseQuery = _firestore
         .collection('users')
         .doc(_uid)
         .collection('products')
         .orderBy('name');
 
-    // Note: Firestore doesn't easily support 'contains' search on a single field
-    // without manual filtering or more advanced indexing (like Algolia/Elasticsearch).
-    // We'll stick to client-side filtering or a simpler prefix query for performance.
-
-    // For now, we'll rely on client-side filtering in the StreamBuilder as it's common for small lists.
     return baseQuery.snapshots();
   }
 
-  // --- Deletion Confirmation (Unchanged) ---
   Future<void> _deleteProduct(String id, String name) async {
     final bool confirm =
         await showDialog(
@@ -165,7 +159,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
     }
   }
 
-  // --- Reusable Input Decoration (Using Constants) ---
   InputDecoration _inputDecoration(String label, IconData icon) {
     return InputDecoration(
       labelText: label,
@@ -182,9 +175,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
     );
   }
 
-  // ----------------------------------------------------------------------
-  // 🏗️ BUILD METHOD
-  // ----------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -196,7 +186,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
         elevation: 4,
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(60.0),
-          // New: Search Bar
           child: Padding(
             padding: const EdgeInsets.all(8.0),
             child: TextField(
@@ -268,12 +257,10 @@ class _ProductsScreenState extends State<ProductsScreen> {
             );
           }
 
-          // Convert documents to ProductModel list
           final allProducts = snapshot.data!.docs
               .map(ProductModel.fromFirestore)
               .toList();
 
-          // Client-side filtering
           final filteredProducts = allProducts.where((product) {
             final query = _searchQuery.toLowerCase().trim();
             if (query.isEmpty) return true;
@@ -284,18 +271,16 @@ class _ProductsScreenState extends State<ProductsScreen> {
             return Center(child: Text("No products match '$_searchQuery'"));
           }
 
-          final docs = filteredProducts;
-
           return ListView.builder(
-            itemCount: docs.length,
+            itemCount: filteredProducts.length,
             padding: const EdgeInsets.only(
               top: 8,
               bottom: 80,
               left: 8,
               right: 8,
-            ), // Add padding for FAB
+            ),
             itemBuilder: (context, i) {
-              final product = docs[i];
+              final product = filteredProducts[i];
 
               return Padding(
                 padding: const EdgeInsets.symmetric(
@@ -329,25 +314,34 @@ class _ProductsScreenState extends State<ProductsScreen> {
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const SizedBox(height: 4),
-                        // Use a consistent display format
                         Text(
                           "Rate: ₹${product.rate.toStringAsFixed(2)} / ${product.unit}",
                           style: const TextStyle(
                             fontSize: 14,
                             color: Colors.black87,
+                            fontWeight: FontWeight.w500,
                           ),
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        Text(
-                          "Stock: ${product.stock.toStringAsFixed(product.stock.truncateToDouble() == product.stock ? 0 : 2)} ${product.unit} | GST: ${product.gstPercent.toStringAsFixed(1)}%",
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: _primaryColor.withOpacity(0.8),
-                          ),
+                        const SizedBox(height: 6),
+
+                        /// ✅ FIXED INFO CHIPS ROW
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            _buildInfoChip(
+                              "Stock: ${product.stock.toStringAsFixed(product.stock.truncateToDouble() == product.stock ? 0 : 2)}",
+                            ),
+                            _buildInfoChip("HSN: ${product.hsnCode}"),
+                            _buildInfoChip("GST: ${product.gstPercent}%"),
+                          ],
                         ),
                       ],
                     ),
@@ -361,7 +355,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
                           showDialog(
                             context: context,
                             builder: (context) => ProductFormDialog(
-                              product: product, // Pass the product model
+                              product: product,
                               firestore: _firestore,
                               uid: _uid,
                               primaryColor: _primaryColor,
@@ -393,10 +387,29 @@ class _ProductsScreenState extends State<ProductsScreen> {
       ),
     );
   }
+
+  Widget _buildInfoChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          color: _primaryColor.withOpacity(0.8),
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
 }
 
 // ======================================================================
-// 4. SEPARATE DIALOG WIDGET (Best Practice: State Management)
+// 4. SEPARATE DIALOG WIDGET
 // ======================================================================
 
 class ProductFormDialog extends StatefulWidget {
@@ -486,7 +499,7 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
         .collection('products');
 
     final productData = ProductModel(
-      id: widget.product?.id ?? '', // Use existing ID or temporary empty string
+      id: widget.product?.id ?? '',
       name: _nameCtrl.text.trim(),
       rate: double.tryParse(_rateCtrl.text) ?? 0.0,
       unit: _selectedUnit,
@@ -497,10 +510,8 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
 
     try {
       if (widget.product == null) {
-        // Add new product
         await collectionRef.add(productData.toMap());
       } else {
-        // Update existing product
         await collectionRef.doc(widget.product!.id).update(productData.toMap());
       }
       if (context.mounted) Navigator.pop(context);
@@ -526,8 +537,8 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
         builder: (context, constraints) {
           return ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: screenWidth * 0.8,
-              maxHeight: screenHeight * 0.8, // limit to 80% of screen height
+              maxWidth: screenWidth * 1.5,
+              maxHeight: screenHeight * 0.85,
             ),
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(20),
@@ -536,7 +547,6 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // --- Title ---
                     Text(
                       isEditing ? "Edit Product" : "Add New Product",
                       style: TextStyle(
@@ -583,17 +593,16 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
                                 v == null ||
                                     v.trim().isEmpty ||
                                     (double.tryParse(v) ?? 0) <= 0
-                                ? "Rate is required"
+                                ? "Required"
                                 : null,
                           ),
                         ),
                         const SizedBox(width: 10),
-
-                        // --- Unit Dropdown with "Add UOM" option ---
                         Expanded(
                           flex: 2,
                           child: DropdownButtonFormField<String>(
                             value: _selectedUnit,
+                            isExpanded: true, // ✅ THIS LINE FIXES OVERFLOW
                             decoration: widget.inputDecoration(
                               "Unit",
                               Icons.unfold_more,
@@ -629,26 +638,21 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
                     ),
                     const SizedBox(height: 16),
 
-                    // --- Stock & GST Row ---
+                    // --- HSN & GST Row (Now Mandatory) ---
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
                           child: TextFormField(
-                            controller: _stockCtrl,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            inputFormatters: [
-                              FilteringTextInputFormatter.allow(
-                                RegExp(r'^\d+\.?\d{0,3}'),
-                              ),
-                            ],
+                            controller: _hsnCtrl,
                             decoration: widget.inputDecoration(
-                              "Stock (Qty)",
-                              Icons.inbox_outlined,
+                              "HSN Code",
+                              Icons.qr_code_2,
                             ),
+                            keyboardType: TextInputType.number,
+                            // Validates HSN is not empty
                             validator: (v) => v == null || v.trim().isEmpty
-                                ? "Required"
+                                ? "HSN Required"
                                 : null,
                           ),
                         ),
@@ -668,20 +672,38 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
                               "GST (%)",
                               Icons.percent,
                             ),
+                            // Validates GST is not empty and is positive
+                            validator: (v) {
+                              if (v == null || v.trim().isEmpty)
+                                return "GST Required";
+                              final val = double.tryParse(v);
+                              if (val == null || val < 0) return "Invalid";
+                              return null;
+                            },
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 16),
 
-                    // --- HSN Code ---
+                    // --- Stock Row ---
                     TextFormField(
-                      controller: _hsnCtrl,
-                      decoration: widget.inputDecoration(
-                        "HSN Code (Optional)",
-                        Icons.qr_code_2,
+                      controller: _stockCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
                       ),
-                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                          RegExp(r'^\d+\.?\d{0,3}'),
+                        ),
+                      ],
+                      decoration: widget.inputDecoration(
+                        "Current Stock (Qty)",
+                        Icons.inbox_outlined,
+                      ),
+                      validator: (v) => v == null || v.trim().isEmpty
+                          ? "Stock is required"
+                          : null,
                     ),
                     const SizedBox(height: 24),
 
@@ -702,11 +724,17 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: widget.accentColor,
                             foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 24,
+                              vertical: 12,
+                            ),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
                           ),
-                          child: Text(isEditing ? "Save" : "Add"),
+                          child: Text(
+                            isEditing ? "Save Changes" : "Add Product",
+                          ),
                         ),
                       ],
                     ),
@@ -720,7 +748,6 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
     );
   }
 
-  // --- Helper: Show dialog to add new UOM ---
   Future<void> _showAddUOMDialog(BuildContext context) async {
     final TextEditingController uomCtrl = TextEditingController();
     await showDialog(

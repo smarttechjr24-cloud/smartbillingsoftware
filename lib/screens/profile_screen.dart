@@ -23,6 +23,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _loading = true;
   Database? _db;
   Uint8List? _logoBytes;
+  bool _enableGST = true;
 
   @override
   void initState() {
@@ -33,7 +34,51 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _initialize() async {
     await _initDb();
     await _fetchCompanyDetails();
+    await _fetchCompanyDetails();
     await _loadLocalLogo();
+    await _loadGSTPreference();
+  }
+
+  Future<void> _loadGSTPreference() async {
+    try {
+      final uid = _auth.currentUser?.uid;
+      if (uid == null) return;
+
+      final doc = await _firestore
+          .collection('users')
+          .doc(uid)
+          .collection('settings')
+          .doc('billing')
+          .get();
+
+      if (doc.exists && doc.data() != null) {
+        setState(() {
+          _enableGST = doc.data()!['enable_gst'] ?? true;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error loading GST preference: $e");
+    }
+  }
+
+  Future<void> _saveGSTPreference(bool value) async {
+    try {
+      final uid = _auth.currentUser?.uid;
+      if (uid == null) return;
+
+      await _firestore
+          .collection('users')
+          .doc(uid)
+          .collection('settings')
+          .doc('billing')
+          .set({'enable_gst': value}, SetOptions(merge: true));
+
+      setState(() {
+        _enableGST = value;
+      });
+    } catch (e) {
+      debugPrint("Error saving GST preference: $e");
+    }
   }
 
   /// 🔹 Initialize SQLite for logo
@@ -321,6 +366,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             Icons.qr_code,
                             "UPI ID",
                             _companyData?['upi_id'] ?? '-',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // GST TOGGLE CARD
+                  Card(
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _enableGST ? Icons.receipt_long : Icons.receipt,
+                            color: _enableGST ? Colors.green : Colors.orange,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  "Enable GST on Bills",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  _enableGST
+                                      ? "Bills will show GST breakdown"
+                                      : "Bills will be without GST",
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: _enableGST,
+                            onChanged: _saveGSTPreference,
+                            activeColor: Colors.green,
                           ),
                         ],
                       ),

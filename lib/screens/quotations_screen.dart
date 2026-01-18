@@ -78,6 +78,35 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
     }
   }
 
+  Future<void> _shareQuotation(Map<String, dynamic> data, String id) async {
+    try {
+      if ((data['items'] ?? []).isEmpty) {
+        _showSnack("⚠ No items found to share");
+        return;
+      }
+      await QuotationPdfService.generateQuotationPDF(
+        id,
+        cachedData: data,
+        printDirectly: false,
+      );
+    } catch (e) {
+      _showSnack('❌ Failed to share: $e');
+    }
+  }
+
+  void _openEditDialog(String quoteId, Map<String, dynamic> data) {
+    // Navigate to AddQuotationScreen with quotation data for editing
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddQuotationScreen(
+          quotationId: quoteId,
+          quotationData: data,
+        ),
+      ),
+    ).then((_) => setState(() {})); // Refresh after editing
+  }
+
   // 🔹 Convert to Invoice Dialog
   Future<void> _openConvertDialog(
     String quoteId,
@@ -695,29 +724,68 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
         for (var i in data['items']) {
           final qty = (i['qty'] ?? 1).toDouble();
           final rate = (i['rate'] ?? 0).toDouble();
-          final lineTotal = qty * rate;
-          subtotal += lineTotal;
+          final baseAmount = qty * rate;
+          subtotal += baseAmount;
 
           cleanedItems.add({
-            'item': i['item'] ?? '',
+            'item_name': i['item'] ?? '',
             'qty': qty,
             'rate': rate,
-            'subtotal': lineTotal,
+            'unit': i['unit'] ?? 'Unit',
+            'taxable_amount': baseAmount,
+            'line_total': baseAmount, // Will be updated with GST below
+            'discount': 0.0,
+            'gst_percent': 0.0, // Will be set below
+            'cgst': 0.0,
+            'sgst': 0.0,
+            'igst': 0.0,
+            'hsn_code': '',
           });
         }
       }
 
-      // 🧮 Use GST from quotation if available
-      double gstPercentage = (data['gst_percentage'] ?? 18).toDouble();
-      double gstAmount = (data['gst_amount'] != null)
-          ? (data['gst_amount'] as num).toDouble()
-          : (subtotal * gstPercentage / 100);
-
+      // 🧮 Calculate GST breakdown
+      const String companyState = 'Tamil Nadu'; // TODO: Get from company settings
+      final String customerState = data['customer_state'] ?? 'Tamil Nadu';
+      final bool isInterstate = customerState.trim().toLowerCase() != companyState.trim().toLowerCase();
+      final String taxType = isInterstate ? 'IGST' : 'CGST_SGST';
+      
+      double gstPercentage = (data['gst_percentage'] ?? 0).toDouble();
+      double totalCgst = 0.0;
+      double totalSgst = 0.0;
+      double totalIgst = 0.0;
+      
+      // Recalculate tax for each item
+      for (var item in cleanedItems) {
+        final taxableAmount = (item['taxable_amount'] ?? 0.0) as double;
+        
+        if (isInterstate) {
+          final igst = taxableAmount * (gstPercentage / 100);
+          item['igst'] = igst;
+          item['line_total'] = taxableAmount + igst;
+          totalIgst += igst;
+        } else {
+          final cgst = taxableAmount * (gstPercentage / 2 / 100);
+          final sgst = taxableAmount * (gstPercentage / 2 / 100);
+          item['cgst'] = cgst;
+          item['sgst'] = sgst;
+          item['line_total'] = taxableAmount + cgst + sgst;
+          totalCgst += cgst;
+          totalSgst += sgst;
+        }
+        
+        item['gst_percent'] = gstPercentage;
+      }
+      
+      final gstAmount = totalCgst + totalSgst + totalIgst;
       final grandTotal = subtotal + gstAmount;
 
       // 🧾 Customer details
       final customerName = (data['customer_name'] ?? 'Unknown').trim();
       final billingAddress = (data['billing_address'] ?? '').trim();
+      final shippingAddress = (data['shipping_address'] ?? billingAddress).trim();
+      final mobile = (data['mobile'] ?? '').trim();
+      final customerGstin = (data['customer_gstin'] ?? '').trim();
 
       // 💰 Prepare invoice data
       final newInvoiceRef = invoicesRef.doc();
@@ -733,11 +801,23 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
         'created_at': FieldValue.serverTimestamp(),
         'customer_name': customerName,
         'billing_address': billingAddress,
+        'shipping_address': shippingAddress,
+        'mobile': mobile,
+        'customer_gstin': customerGstin,
+        'customer_state': customerState,
+        'customer_state_code': '33', // TODO: Map state to code
+        'place_of_supply': customerState,
+        'tax_type': taxType,
         'gst_percentage': gstPercentage,
         'gst_amount': gstAmount,
+        'cgst_total': totalCgst,
+        'sgst_total': totalSgst,
+        'igst_total': totalIgst,
         'subtotal': subtotal,
         'grand_total': grandTotal,
         'items': cleanedItems,
+        'note': data['note'] ?? '',
+        'outstanding_after_invoice': grandTotal, // Will be updated when customer is processed
       };
 
       // 🧠 Save invoice
@@ -1378,8 +1458,14 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                           spacing: 6,
                           children: [
                             IconButton(
+                              icon: const Icon(Icons.share, color: Colors.green),
+                              onPressed: () => _shareQuotation(data, doc.id),
+                              tooltip: 'Share',
+                            ),
+                            IconButton(
                               icon: const Icon(Icons.print, color: Colors.blue),
                               onPressed: () => _printQuotation(data, doc.id),
+                              tooltip: 'Print',
                             ),
                             PopupMenuButton<String>(
                               shape: RoundedRectangleBorder(
@@ -1413,7 +1499,7 @@ class _QuotationsScreenState extends State<QuotationsScreen> {
                                   // 📝 Edit option (always enabled)
                                   const PopupMenuItem(
                                     value: 'edit',
-                                    child: Text("Edit"),
+                                    child: Text("Edit ✏"),
                                   ),
 
                                   // 🔄 Convert option (disabled if already converted)

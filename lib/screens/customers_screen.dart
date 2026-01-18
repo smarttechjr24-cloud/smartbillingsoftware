@@ -15,13 +15,72 @@ class _CustomersScreenState extends State<CustomersScreen> {
   final _auth = FirebaseAuth.instance;
   String? get _uid => _auth.currentUser?.uid;
 
-  // --- Theme Colors for Consistency ---
-  final primaryColor = const Color(0xFF1F3A5F); // Deep Navy Blue
-  final accentColor = const Color(0xFF00A3A3); // Teal/Cyan Accent
+  final primaryColor = const Color(0xFF1976D2);
+  final accentColor = const Color(0xFF1976D2);
   final deleteColor = Colors.redAccent;
   final outstandingColor = Colors.orange.shade700;
+  final successColor = Colors.green.shade700;
 
-  // --- Firestore Stream ---
+  final String _companyState = "Tamil Nadu";
+
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _searchQuery = "";
+
+  final List<String> _indianStates = [
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chhattisgarh",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+    "Andaman and Nicobar Islands",
+    "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi",
+    "Jammu and Kashmir",
+    "Ladakh",
+    "Lakshadweep",
+    "Puducherry",
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl.addListener(() {
+      setState(() {
+        _searchQuery = _searchCtrl.text.toLowerCase().trim();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> _getCustomers() {
     if (_uid == null) return const Stream.empty();
     return _firestore
@@ -32,7 +91,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
         .snapshots();
   }
 
-  // --- Snack Bar Utility ---
+  String _determineTaxType(String customerState) {
+    if (customerState == _companyState) {
+      return "CGST_SGST";
+    } else {
+      return "IGST";
+    }
+  }
+
   void _showSnack(String msg, {bool success = false}) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -45,7 +111,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
   }
 
-  // --- Modal Dialog for Add/Edit Customer ---
   Future<void> _addOrEditCustomer({
     Map<String, dynamic>? data,
     String? id,
@@ -60,182 +125,235 @@ class _CustomersScreenState extends State<CustomersScreen> {
           ? data!['outstanding'].toString()
           : '0.0',
     );
+    String? selectedState = data?['customer_state'] ?? _companyState;
     final isNew = data == null;
 
     await showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          isNew ? "Add New Customer" : "Edit Customer",
-          style: TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
-        ),
-        content: Container(
-          width: MediaQuery.of(context).size.width * 0.9,
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: SingleChildScrollView(
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // --- Name ---
-                  TextFormField(
-                    controller: nameCtrl,
-                    decoration: _inputDecoration(
-                      "Customer Name",
-                      Icons.person_outline,
+      builder: (_) => LayoutBuilder(
+        builder: (context, constr) {
+          final width = MediaQuery.of(context).size.width;
+          final isSmall = width < 600;
+          final contentPad = isSmall ? 12.0 : 24.0;
+
+          return StatefulBuilder(
+            builder: (context, setStateDialog) {
+              return AlertDialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                title: Row(
+                  children: [
+                    Icon(
+                      isNew ? Icons.person_add : Icons.edit,
+                      color: primaryColor,
                     ),
-                    validator: (v) => v == null || v.trim().isEmpty
-                        ? "Name is required"
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-                  // --- Phone ---
-                  TextFormField(
-                    controller: phoneCtrl,
-                    keyboardType: TextInputType.phone,
-                    decoration: _inputDecoration(
-                      "Phone Number",
-                      Icons.phone_outlined,
-                    ),
-                    validator: (v) => v == null || v.trim().isEmpty
-                        ? "Phone is required"
-                        : null,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    maxLength: 10,
-                  ),
-                  const SizedBox(height: 12),
-                  // --- Address ---
-                  TextFormField(
-                    controller: addressCtrl,
-                    maxLines: 2,
-                    decoration: _inputDecoration(
-                      "Address",
-                      Icons.location_on_outlined,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // --- GST Number ---
-                  TextFormField(
-                    controller: gstCtrl,
-                    decoration: _inputDecoration(
-                      "GST Number (Optional)",
-                      Icons.confirmation_number_outlined,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // --- Outstanding (Only editable for NEW customer) ---
-                  TextFormField(
-                    controller: outstandingCtrl,
-                    keyboardType: TextInputType.number,
-                    enabled:
-                        isNew, // Only allow setting initial outstanding amount
-                    decoration: _inputDecoration(
-                      "Initial Outstanding (₹)",
-                      Icons.money_off,
-                    ),
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(
-                        RegExp(r'^\d*\.?\d{0,2}'),
+                    const SizedBox(width: 8),
+                    Text(
+                      isNew ? "New Customer" : "Edit Customer",
+                      style: TextStyle(
+                        color: primaryColor,
+                        fontWeight: FontWeight.bold,
                       ),
-                    ],
-                    validator: (v) {
-                      if (!isNew && (v == null || v.trim().isEmpty))
-                        return null;
-                      if (double.tryParse(v!) == null)
-                        return "Enter a valid amount";
-                      return null;
+                    ),
+                  ],
+                ),
+                content: Container(
+                  width: width * (isSmall ? 0.98 : 0.65),
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.all(contentPad),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextFormField(
+                            controller: nameCtrl,
+                            decoration: _inputDecoration(
+                              "Customer Name",
+                              Icons.business,
+                            ),
+                            validator: (v) => v == null || v.trim().isEmpty
+                                ? "Name is required"
+                                : null,
+                          ),
+                          SizedBox(height: isSmall ? 8 : 12),
+                          TextFormField(
+                            controller: phoneCtrl,
+                            keyboardType: TextInputType.phone,
+                            decoration: _inputDecoration(
+                              "Phone Number",
+                              Icons.phone,
+                            ),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(10),
+                            ],
+                            validator: (v) {
+                              if (v == null || v.trim().isEmpty)
+                                return "Phone is required";
+                              if (v.length != 10)
+                                return "Phone must be 10 digits";
+                              return null;
+                            },
+                          ),
+                          SizedBox(height: isSmall ? 8 : 12),
+                          DropdownButtonFormField<String>(
+                            isExpanded: true,
+                            value: selectedState,
+                            decoration: _inputDecoration("State", Icons.map),
+                            items: _indianStates.map((state) {
+                              return DropdownMenuItem(
+                                value: state,
+                                child: Text(state),
+                              );
+                            }).toList(),
+                            onChanged: (val) =>
+                                setStateDialog(() => selectedState = val),
+                            validator: (v) {
+                              if (gstCtrl.text.isNotEmpty && v == null) {
+                                return "State required for GST calculation";
+                              }
+                              return null;
+                            },
+                          ),
+                          SizedBox(height: isSmall ? 8 : 12),
+                          TextFormField(
+                            controller: gstCtrl,
+                            textCapitalization: TextCapitalization.characters,
+                            decoration: _inputDecoration(
+                              "GST Number (Optional)",
+                              Icons.confirmation_number,
+                            ),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[a-zA-Z0-9]'),
+                              ),
+                              LengthLimitingTextInputFormatter(15),
+                            ],
+                            validator: (v) {
+                              if (v != null && v.isNotEmpty) {
+                                if (v.length != 15)
+                                  return "GST must be 15 characters";
+                                final gstRegex = RegExp(
+                                  r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$',
+                                );
+                                if (!gstRegex.hasMatch(v))
+                                  return "Invalid GST Format";
+                              }
+                              return null;
+                            },
+                          ),
+                          SizedBox(height: isSmall ? 8 : 12),
+
+                          TextFormField(
+                            controller: addressCtrl,
+                            maxLines: 2,
+                            decoration: _inputDecoration(
+                              "Billing Address",
+                              Icons.location_on,
+                            ),
+                          ),
+                          SizedBox(height: isSmall ? 8 : 12),
+                          if (isNew)
+                            TextFormField(
+                              controller: outstandingCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: _inputDecoration(
+                                "Opening Balance (₹)",
+                                Icons.account_balance_wallet,
+                              ),
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(
+                                  RegExp(r'^\d*\.?\d{0,2}'),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      "Cancel",
+                      style: TextStyle(color: Colors.grey[600]),
+                    ),
+                  ),
+                  ElevatedButton(
+                    onPressed: () async {
+                      if (_formKey.currentState!.validate()) {
+                        final taxType = _determineTaxType(
+                          selectedState ?? _companyState,
+                        );
+
+                        final dataMap = {
+                          'name': nameCtrl.text.trim(),
+                          'phone': phoneCtrl.text.trim(),
+                          'address': addressCtrl.text.trim(),
+                          'gst_number': gstCtrl.text.trim().toUpperCase(),
+                          'customer_state': selectedState,
+                          'tax_type': taxType,
+                          'updated_at': FieldValue.serverTimestamp(),
+                        };
+
+                        final ref = _firestore
+                            .collection('users')
+                            .doc(_uid)
+                            .collection('customers');
+                        try {
+                          if (id == null) {
+                            dataMap['outstanding'] =
+                                double.tryParse(outstandingCtrl.text) ?? 0.0;
+                            dataMap['created_at'] =
+                                FieldValue.serverTimestamp();
+                            await ref.add(dataMap);
+                            _showSnack(
+                              "✅ Customer added successfully!",
+                              success: true,
+                            );
+                          } else {
+                            await ref.doc(id).update(dataMap);
+                            _showSnack("✅ Customer updated!", success: true);
+                          }
+                        } catch (e) {
+                          _showSnack("❌ Error: $e");
+                        }
+                        if (context.mounted) Navigator.pop(context);
+                      }
                     },
-                    style: isNew
-                        ? null
-                        : TextStyle(color: Colors.grey.shade600),
-                  ),
-                  if (!isNew)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4.0),
-                      child: Text(
-                        "Outstanding balance must be updated via payment/invoice.",
-                        style: TextStyle(fontSize: 12, color: outstandingColor),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: accentColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
                       ),
                     ),
+                    child: Text(isNew ? "Save Customer" : "Update"),
+                  ),
                 ],
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text("Cancel", style: TextStyle(color: primaryColor)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (_formKey.currentState!.validate()) {
-                final dataMap = {
-                  'name': nameCtrl.text.trim(),
-                  'phone': phoneCtrl.text.trim(),
-                  'address': addressCtrl.text.trim(),
-                  'gst_number': gstCtrl.text.trim(),
-                  'outstanding': double.tryParse(outstandingCtrl.text) ?? 0.0,
-                  'updated_at': FieldValue.serverTimestamp(),
-                };
-
-                final ref = _firestore
-                    .collection('users')
-                    .doc(_uid)
-                    .collection('customers');
-
-                try {
-                  if (id == null) {
-                    await ref.add({
-                      ...dataMap,
-                      'created_at': FieldValue.serverTimestamp(),
-                    });
-                    _showSnack("✅ Customer added!", success: true);
-                  } else {
-                    // When editing, don't update 'outstanding' if the field was disabled (not new)
-                    final updateMap = Map<String, dynamic>.from(dataMap);
-                    if (!isNew) updateMap.remove('outstanding');
-
-                    await ref.doc(id).update(updateMap);
-                    _showSnack("✅ Customer updated!", success: true);
-                  }
-                } catch (e) {
-                  _showSnack("❌ Error saving customer: $e");
-                }
-
-                if (context.mounted) Navigator.pop(context);
-              }
+              );
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: accentColor,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-            child: Text(isNew ? "Add Customer" : "Save Changes"),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 
-  // --- Deletion Confirmation ---
   Future<void> _deleteCustomer(String id, String name) async {
     final bool confirm =
         await showDialog(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text("Confirm Deletion"),
-            content: Text(
-              "Are you sure you want to delete '$name'? This action cannot be undone.",
-            ),
+            title: const Text("Delete Customer?"),
+            content: Text("Are you sure you want to delete '$name'?"),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: Text("Cancel", style: TextStyle(color: primaryColor)),
+                child: const Text("Cancel"),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
@@ -247,202 +365,334 @@ class _CustomersScreenState extends State<CustomersScreen> {
         false;
 
     if (confirm) {
-      try {
-        await _firestore
-            .collection('users')
-            .doc(_uid)
-            .collection('customers')
-            .doc(id)
-            .delete();
-        _showSnack("🗑 Customer '$name' deleted!", success: true);
-      } catch (e) {
-        _showSnack("❌ Error deleting customer: $e");
-      }
+      await _firestore
+          .collection('users')
+          .doc(_uid)
+          .collection('customers')
+          .doc(id)
+          .delete();
+      _showSnack("Customer deleted");
     }
   }
 
-  // --- Reusable Input Decoration ---
   InputDecoration _inputDecoration(String label, IconData icon) {
     return InputDecoration(
       labelText: label,
       prefixIcon: Icon(icon, color: primaryColor.withOpacity(0.7)),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: BorderSide(color: primaryColor.withOpacity(0.3)),
-      ),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
         borderSide: BorderSide(color: accentColor, width: 2),
       ),
-      contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
-      counterText: "", // Hide character counter for phone/GST
+      contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+      isDense: true,
     );
   }
 
-  // ----------------------------------------------------------------------
-  // 🏗️ BUILD METHOD
-  // ----------------------------------------------------------------------
-
   @override
   Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    final isSmall = width < 600;
+    final outerPad = isSmall ? 7.0 : 13.0;
+    final topPad = isSmall ? 4.0 : 10.0;
+    final bottomPad = isSmall ? 50.0 : 80.0;
+    final avatarRadius = isSmall ? 19.0 : 24.0;
+    final titleFont = isSmall ? 13.9 : 16.0;
+    final subtitleFont = isSmall ? 12.2 : 13.3;
+    final chipFont = isSmall ? 8.4 : 10.0;
+    final iconSize = isSmall ? 15.0 : 20.0;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Customers List 🧑‍🤝‍🧑"),
+        title: const Text("Parties / Customers"),
         centerTitle: true,
-        backgroundColor: primaryColor,
+        backgroundColor: const Color(0xFF1976D2),
         foregroundColor: Colors.white,
-        elevation: 4,
+        elevation: 0,
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(isSmall ? 50 : 70),
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(outerPad + 6, 0, outerPad + 6, 10),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                hintText: "Search Name or Phone...",
+                filled: true,
+                fillColor: Colors.white,
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => _searchCtrl.clear(),
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: EdgeInsets.symmetric(vertical: isSmall ? 1 : 5),
+              ),
+            ),
+          ),
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: accentColor,
         foregroundColor: Colors.white,
         onPressed: () => _addOrEditCustomer(),
-        icon: const Icon(Icons.person_add_alt_1),
-        label: const Text("Add Customer"),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        icon: Icon(Icons.add, size: isSmall ? 19 : 24),
+        label: Text("Add Party", style: TextStyle(fontSize: isSmall ? 13 : 15)),
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: _getCustomers(),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) {
+          if (!snapshot.hasData)
             return const Center(child: CircularProgressIndicator());
-          }
+
           final docs = snapshot.data!.docs;
-          if (docs.isEmpty) {
+
+          final filteredDocs = docs.where((doc) {
+            final data = doc.data();
+            final name = (data['name'] ?? '').toLowerCase();
+            final phone = (data['phone'] ?? '').toString();
+            return name.contains(_searchQuery) || phone.contains(_searchQuery);
+          }).toList();
+
+          if (filteredDocs.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    Icons.people_outline,
-                    size: 80,
-                    color: primaryColor.withOpacity(0.5),
+                    Icons.person_search_outlined,
+                    size: isSmall ? 40 : 60,
+                    color: Colors.grey[400],
                   ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    "No customers found. Tap '+' to add a customer.",
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                  SizedBox(height: isSmall ? 4 : 10),
+                  Text(
+                    _searchQuery.isEmpty
+                        ? "No customers yet."
+                        : "No results found.",
+                    style: TextStyle(color: Colors.grey[600]),
                   ),
                 ],
               ),
             );
           }
+
           return ListView.builder(
-            padding: const EdgeInsets.only(
-              top: 8,
-              bottom: 80,
-              left: 8,
-              right: 8,
+            padding: EdgeInsets.only(
+              top: topPad,
+              bottom: bottomPad,
+              left: outerPad,
+              right: outerPad,
             ),
-            itemCount: docs.length,
+            itemCount: filteredDocs.length,
             itemBuilder: (context, index) {
-              final doc = docs[index];
+              final doc = filteredDocs[index];
               final data = doc.data();
-              final String name = data['name'] ?? 'N/A';
-              final String phone = data['phone'] ?? 'No Phone';
+
+              final name = data['name'] ?? 'N/A';
+              final phone = data['phone'] ?? '';
+              final state = data['customer_state'] ?? 'Unknown State';
+              final gst = data['gst_number'] ?? '';
+              final taxType = data['tax_type'] ?? 'IGST';
               final double outstanding = (data['outstanding'] is num)
                   ? data['outstanding'].toDouble()
                   : 0.0;
-              final String gst = data['gst_number'] ?? 'N/A';
 
-              return Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 4.0,
-                  horizontal: 8.0,
+              return Card(
+                elevation: 2,
+                margin: EdgeInsets.only(bottom: isSmall ? 5 : 8),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                child: Card(
-                  elevation: 2,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(
-                      color: primaryColor.withOpacity(0.1),
-                      width: 1,
-                    ),
-                  ),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    // --- Leading Icon/Avatar ---
-                    leading: CircleAvatar(
-                      backgroundColor: accentColor.withOpacity(0.1),
-                      child: Icon(Icons.person, color: accentColor),
-                    ),
-                    // --- Title and Subtitle ---
-                    title: Text(
-                      name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const SizedBox(height: 4),
-                        Text(
-                          "Phone: $phone",
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.black87,
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            Text(
-                              "Outstanding: ",
+                child: Padding(
+                  padding: EdgeInsets.all(isSmall ? 7 : 12),
+                  child: Column(
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CircleAvatar(
+                            radius: avatarRadius,
+                            backgroundColor: primaryColor.withOpacity(0.1),
+                            child: Text(
+                              name.isNotEmpty ? name[0].toUpperCase() : '?',
                               style: TextStyle(
-                                fontSize: 14,
-                                color: primaryColor.withOpacity(0.8),
-                              ),
-                            ),
-                            Text(
-                              "₹${outstanding.toStringAsFixed(2)}",
-                              style: TextStyle(
-                                fontSize: 14,
                                 fontWeight: FontWeight.bold,
-                                color: outstanding > 0
-                                    ? outstandingColor
-                                    : Colors.green.shade700,
+                                color: primaryColor,
+                                fontSize: avatarRadius,
                               ),
                             ),
-                          ],
-                        ),
-                        if (gst != 'N/A')
-                          Text(
-                            "GST: $gst",
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
+                          ),
+                          SizedBox(width: isSmall ? 8 : 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: titleFont,
+                                  ),
+                                ),
+                                SizedBox(height: isSmall ? 2 : 4),
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.phone,
+                                      size: iconSize,
+                                      color: Colors.grey[600],
+                                    ),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      phone,
+                                      style: TextStyle(
+                                        color: Colors.grey[800],
+                                        fontSize: subtitleFont,
+                                      ),
+                                    ),
+                                    SizedBox(width: isSmall ? 7 : 12),
+                                    Icon(
+                                      Icons.location_on,
+                                      size: iconSize,
+                                      color: Colors.grey[600],
+                                    ),
+                                    SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        state,
+                                        style: TextStyle(
+                                          color: Colors.grey[800],
+                                          fontSize: subtitleFont,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
                           ),
-                      ],
-                    ),
-                    // --- Trailing Actions ---
-                    trailing: PopupMenuButton<String>(
-                      icon: Icon(
-                        Icons.more_vert,
-                        color: primaryColor.withOpacity(0.7),
-                      ),
-                      onSelected: (v) {
-                        if (v == 'edit') {
-                          _addOrEditCustomer(data: data, id: doc.id);
-                        } else if (v == 'delete') {
-                          _deleteCustomer(doc.id, name);
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        const PopupMenuItem(value: 'edit', child: Text("Edit")),
-                        PopupMenuItem(
-                          value: 'delete',
-                          child: Text(
-                            "Delete",
-                            style: TextStyle(color: deleteColor),
+                          PopupMenuButton<String>(
+                            icon: Icon(
+                              Icons.more_vert,
+                              size: isSmall ? 16 : 20,
+                            ),
+                            onSelected: (v) {
+                              if (v == 'edit')
+                                _addOrEditCustomer(data: data, id: doc.id);
+                              if (v == 'delete') _deleteCustomer(doc.id, name);
+                            },
+                            itemBuilder: (_) => [
+                              const PopupMenuItem(
+                                value: 'edit',
+                                child: Text("Edit"),
+                              ),
+                              const PopupMenuItem(
+                                value: 'delete',
+                                child: Text(
+                                  "Delete",
+                                  style: TextStyle(color: Colors.red),
+                                ),
+                              ),
+                            ],
                           ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      ),
+                      const Divider(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (gst.isNotEmpty)
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green.shade50,
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: Colors.green.shade200,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        "GST Active",
+                                        style: TextStyle(
+                                          fontSize: chipFont,
+                                          color: Colors.green,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                    SizedBox(width: 6),
+                                    Container(
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.shade50,
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: Colors.blue.shade200,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        taxType.replaceAll('_', '+'),
+                                        style: TextStyle(
+                                          fontSize: chipFont,
+                                          color: Colors.blue,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              else
+                                Text(
+                                  "Unregistered",
+                                  style: TextStyle(
+                                    fontSize: chipFont + 3,
+                                    color: Colors.grey[500],
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                            ],
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                "Outstanding",
+                                style: TextStyle(
+                                  fontSize: chipFont + 2,
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+                              Text(
+                                "₹${outstanding.toStringAsFixed(2)}",
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: titleFont + 1,
+                                  color: outstanding > 0
+                                      ? outstandingColor
+                                      : successColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               );

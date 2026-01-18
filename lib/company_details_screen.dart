@@ -22,6 +22,8 @@ class _CompanyDetailsScreenState extends State<CompanyDetailsScreen> {
   final _gstController = TextEditingController();
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
+  // ⚡ NEW: Email Controller
+  final _emailController = TextEditingController();
   final _upiController = TextEditingController();
 
   File? _logoFile;
@@ -48,12 +50,92 @@ class _CompanyDetailsScreenState extends State<CompanyDetailsScreen> {
         ''');
       },
     );
+    // ⚡ Load existing data from Firestore on startup
+    _loadDetails();
+  }
+
+  // --------------------------------------------------------------------------
+  // 🔹 Load existing company details from Firestore
+  // --------------------------------------------------------------------------
+  Future<void> _loadDetails() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('company')
+        .doc('details')
+        .get();
+
+    if (doc.exists) {
+      final data = doc.data()!;
+      _nameController.text = data['name'] ?? '';
+      _gstController.text = data['gstin'] ?? '';
+      _addressController.text = data['address'] ?? '';
+      _phoneController.text = data['phone'] ?? '';
+      // ⚡ Load Email
+      _emailController.text = data['email'] ?? '';
+      _upiController.text = data['upi_id'] ?? '';
+      // No need to load logo file, as it's handled by FutureBuilder
+      setState(() {});
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 🔹 Check subscription status
+  // --------------------------------------------------------------------------
+  Future<void> _checkSubscription() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .get();
+
+    final sub = userDoc.data()?['subscription'];
+
+    // 👇 No subscription found — redirect
+    if (sub == null) {
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/subscription');
+      }
+      return;
+    }
+
+    // 👇 Check expiry
+    try {
+      final expiry = (sub['expiry'] as Timestamp).toDate();
+      if (expiry.isBefore(DateTime.now())) {
+        if (mounted) {
+          Navigator.pushReplacementNamed(context, '/subscription');
+        }
+      }
+    } catch (e) {
+      // If expiry field missing or invalid
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/subscription');
+      }
+    }
   }
 
   @override
   void initState() {
     super.initState();
     _initDb();
+    _checkSubscription();
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _gstController.dispose();
+    _addressController.dispose();
+    _phoneController.dispose();
+    _emailController.dispose(); // ⚡ Dispose new controller
+    _upiController.dispose();
+    super.dispose();
   }
 
   // --------------------------------------------------------------------------
@@ -72,6 +154,7 @@ class _CompanyDetailsScreenState extends State<CompanyDetailsScreen> {
     final extension = path.extension(file.path).toLowerCase();
 
     if (extension != ".png") {
+      // ignore: use_build_context_synchronously
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Only PNG files are allowed."),
@@ -112,6 +195,7 @@ class _CompanyDetailsScreenState extends State<CompanyDetailsScreen> {
         'gstin': _gstController.text.trim(),
         'address': _addressController.text.trim(),
         'phone': _phoneController.text.trim(),
+        'email': _emailController.text.trim(), // ⚡ NEW: Saving Email
         'upi_id': _upiController.text.trim(),
         'logo_url': '', // empty since stored locally
         'created_at': FieldValue.serverTimestamp(),
@@ -123,24 +207,30 @@ class _CompanyDetailsScreenState extends State<CompanyDetailsScreen> {
           .doc(user.uid)
           .collection('company')
           .doc('details')
-          .set(companyData);
+          .set(
+            companyData,
+            SetOptions(merge: true),
+          ); // Use merge: true to avoid overwriting unrelated fields
 
       await firestore.collection('users').doc(user.uid).update({
         'has_company_details': true,
       });
 
       if (mounted) {
+        // ignore: use_build_context_synchronously
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("✅ Company details saved successfully!"),
           ),
         );
+        // ignore: use_build_context_synchronously
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const MainNavigation()),
         );
       }
     } catch (e) {
+      // ignore: use_build_context_synchronously
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text("❌ Error: $e")));
@@ -255,6 +345,26 @@ class _CompanyDetailsScreenState extends State<CompanyDetailsScreen> {
                     decoration: _inputDecoration("Address", Icons.location_on),
                     validator: (v) =>
                         v == null || v.isEmpty ? "Enter address" : null,
+                  ),
+                  const SizedBox(height: 16),
+
+                  // ⚡ NEW: Email Input Field
+                  TextFormField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: _inputDecoration("Email", Icons.email),
+                    validator: (v) {
+                      if (v == null || v.isEmpty) {
+                        return "Enter email address";
+                      }
+                      // Basic email validation regex
+                      if (!RegExp(
+                        r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
+                      ).hasMatch(v)) {
+                        return "Enter a valid email address";
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 16),
 

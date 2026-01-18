@@ -2,7 +2,7 @@ name: smartbilling
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
-publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+publish_to: "none" # Remove this line if you wish to publish to pub.dev
 
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
@@ -52,6 +52,13 @@ dependencies:
   share_plus: ^10.0.2
   flutter_tts: ^4.2.3
   speech_to_text: ^7.3.0
+  webview_flutter: ^4.13.0
+  device_info_plus: ^12.2.0
+  google_fonts: ^6.3.2
+  shimmer: ^3.0.0
+  signature: ^6.3.0
+  app_links: ^6.3.3
+  shared_preferences: ^2.3.4
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -64,21 +71,25 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   mockito: ^5.5.1
   firebase_auth_mocks: ^0.15.1
+  shimmer: ^3.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
 flutter:
-
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
 
   # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
+  assets:
+    - assets/pdf.png
+    - assets/templates/templatea.png
+    - assets/templates/templateb.png
+    - assets/templates/templatec.png
+    - assets/templates/templated.png
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see
@@ -109,15 +120,15 @@ flutter:
 flutter_icons:
   android: true
   ios: true
-  image_path: "assets/logo.png"
+  image_path: "assets/icon2.png"
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/logo.png"
+  adaptive_icon_foreground: "assets/icon2.png"
 
 flutter_native_splash:
-  color: "#FFFFFF"         # background color
-  image: assets/logo.png   # your logo
-  branding: assets/logo.png # optional small tagline image
+  color: "#FFFFFF" # background color
+  image: assets/icon2.png # your logo
+  branding: assets/icon2.png # optional small tagline image
   android_12:
-    image: assets/logo.png
+    image: assets/icon2.png
     icon_background_color: "#FFFFFF"
   web: true

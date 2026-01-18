@@ -4,13 +4,21 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:smartbilling/screens/customers_screen.dart';
-import 'package:smartbilling/screens/invoices_screen.dart';
-import 'package:smartbilling/screens/notifications_screen.dart';
-import 'package:smartbilling/screens/payment_receipt_screen.dart';
-import 'package:smartbilling/screens/products_screen.dart';
-import 'package:smartbilling/screens/quotations_screen.dart';
-import 'package:smartbilling/paytm.dart';
+import 'package:smartbilling/screens/add_invoice_screen.dart';
+import 'package:smartbilling/screens/add_quotation.dart';
+import 'package:smartbilling/screens/purchase.dart';
+import 'package:smartbilling/screens/purchase_screen.dart';
+import 'package:smartbilling/screens/supplier_screen.dart';
+import 'package:smartbilling/screens/purchase_payment_receipt_screen.dart';
+import 'ProfitReportScreen.dart';
+
+import 'customers_screen.dart';
+import 'invoices_screen.dart';
+import 'notifications_screen.dart';
+import 'payment_receipt_screen.dart';
+import 'products_screen.dart';
+import 'quotations_screen.dart';
+import '../paytm.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -23,6 +31,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
 
+  // Dashboard stats
   double totalSales = 0;
   double totalGST = 0;
   double totalOutstanding = 0;
@@ -31,12 +40,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int totalInvoices = 0;
   int totalCustomers = 0;
   int totalProducts = 0;
+  double totalPurchase = 0;
+  int totalPurchaseCount = 0;
+  StreamSubscription? _purchaseSub;
+  int totalSuppliers = 0;
+  double totalSupplierOutstanding = 0;
+  StreamSubscription? _supplierSub;
 
   double maxRevenue = 1000;
   List<BarChartGroupData> revenueData = [];
-
   bool isLoading = true;
-  late final String uid;
+  String uid = ""; // Will be set to businessId for staff
 
   StreamSubscription? _invoiceSub;
   StreamSubscription? _quotationSub;
@@ -44,135 +58,291 @@ class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription? _productSub;
   StreamSubscription? _paymentSub;
 
+  // Theme Colors
+  final Color _backgroundColor = const Color(0xFFF5F7FA);
+  final Color _primaryColor = const Color(0xFF1976D2);
+  final Color _cardColor = Colors.white;
+
   @override
   void initState() {
     super.initState();
-    uid = _auth.currentUser?.uid ?? '';
-    if (uid.isNotEmpty) _attachRealtimeListeners();
+    _initializeUid();
   }
 
-  /// 🔹 Attach real-time Firestore listeners
+  Future<void> _initializeUid() async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      setState(() => isLoading = false);
+      return;
+    }
+
+    try {
+      // Get user document to check if staff
+      final userDoc = await _firestore.collection("users").doc(user.uid).get();
+
+      if (userDoc.exists) {
+        final data = userDoc.data()!;
+        final businessId = data['businessId'];
+
+        // If staff, use businessId (owner's uid), otherwise use own uid
+        if (businessId != null && businessId != user.uid) {
+          uid = businessId;
+        } else {
+          uid = user.uid;
+        }
+      } else {
+        uid = user.uid;
+      }
+
+      if (uid.isNotEmpty) {
+        _attachRealtimeListeners();
+      }
+    } catch (e) {
+      debugPrint("Error initializing UID: $e");
+      uid = user.uid;
+      if (uid.isNotEmpty) {
+        _attachRealtimeListeners();
+      }
+    }
+  }
+
+  // --------------------------- PLAN CHECK ---------------------------
+  Future<bool> checkPlanActive() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return true; // Allow if not logged in (shouldn't happen)
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection("users")
+          .doc(user.uid)
+          .get();
+
+      if (!doc.exists) return true; // Allow if doc doesn't exist
+
+      final data = doc.data()!;
+
+      // Check if user is staff (has businessId different from uid)
+      String? businessId = data['businessId'];
+      Map<String, dynamic> planData = data;
+
+      // If staff, fetch owner's data for plan check
+      if (businessId != null && businessId != user.uid) {
+        final ownerDoc = await FirebaseFirestore.instance
+            .collection("users")
+            .doc(businessId)
+            .get();
+
+        if (ownerDoc.exists) {
+          planData = ownerDoc.data()!;
+        } else {
+          return true; // Owner not found, allow access
+        }
+      }
+
+      final expiry = planData["expiry"] != null
+          ? (planData["expiry"] as Timestamp).toDate()
+          : null;
+
+      // If no expiry, allow access (for backward compatibility)
+      if (expiry == null) return true;
+
+      return expiry.isAfter(DateTime.now());
+    } catch (e) {
+      debugPrint("Error checking plan: $e");
+      return true; // Allow access on error
+    }
+  }
+
+  void blockedMessage() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Your plan has expired. Please contact admin."),
+        backgroundColor: Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  // --------------------------- REAL TIME LISTENERS ---------------------------
   void _attachRealtimeListeners() {
     _invoiceSub?.cancel();
     _quotationSub?.cancel();
     _customerSub?.cancel();
     _productSub?.cancel();
     _paymentSub?.cancel();
+    _purchaseSub?.cancel();
 
-    // 🧾 Invoices
-    _invoiceSub = _firestore
-        .collection('users')
+    _supplierSub = _firestore
+        .collection("users")
         .doc(uid)
-        .collection('invoices')
+        .collection("suppliers")
+        .snapshots()
+        .listen((snap) {
+          totalSuppliers = snap.docs.length;
+
+          double total = 0;
+          for (var doc in snap.docs) {
+            total += (doc['outstandingBalance'] ?? 0).toDouble();
+          }
+
+          totalSupplierOutstanding = total;
+          setState(() {});
+        });
+
+    _purchaseSub = _firestore
+        .collection("users")
+        .doc(uid)
+        .collection("purchases")
+        .snapshots()
+        .listen((snap) {
+          double total = 0;
+
+          for (var doc in snap.docs) {
+            final data = doc.data();
+            // Robust check for total amount field
+            final amount = (data['grand_total'] as num?)?.toDouble() ??
+                (data['grandtotal'] as num?)?.toDouble() ??
+                (data['grand_Total'] as num?)?.toDouble() ??
+                (data['totalAmount'] as num?)?.toDouble() ??
+                0.0;
+            total += amount;
+          }
+
+          totalPurchase = total;
+          totalPurchaseCount = snap.docs.length;
+          if (mounted) setState(() {});
+        });
+
+    _invoiceSub = _firestore
+        .collection("users")
+        .doc(uid)
+        .collection("invoices")
         .snapshots()
         .listen(_updateDashboard);
 
-    // 📄 Quotations
     _quotationSub = _firestore
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('quotations')
+        .collection("quotations")
         .snapshots()
         .listen((snap) {
-          setState(() => totalQuotations = snap.docs.length.toDouble());
+          totalQuotations = snap.docs.length.toDouble();
+          setState(() {});
         });
 
-    // 👥 Customers
     _customerSub = _firestore
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('customers')
+        .collection("customers")
         .snapshots()
         .listen((snap) {
           double outstanding = 0;
           for (var doc in snap.docs) {
             outstanding += (doc['outstanding'] ?? 0).toDouble();
           }
-          setState(() {
-            totalOutstanding = outstanding;
-            totalCustomers = snap.docs.length;
-          });
+          totalOutstanding = outstanding;
+          totalCustomers = snap.docs.length;
+          setState(() {});
         });
 
-    // 📦 Products
     _productSub = _firestore
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('products')
+        .collection("products")
         .snapshots()
         .listen((snap) {
-          setState(() => totalProducts = snap.docs.length);
+          totalProducts = snap.docs.length;
+          setState(() {});
         });
 
-    // 💳 Payments
     _paymentSub = _firestore
-        .collection('users')
+        .collection("users")
         .doc(uid)
-        .collection('payments')
+        .collection("payments")
         .snapshots()
         .listen((snap) {
           double total = 0;
           for (var doc in snap.docs) {
             total += (doc['amount'] ?? 0).toDouble();
           }
-          setState(() => totalPayments = total);
+          totalPayments = total;
+          setState(() {});
         });
   }
 
-  /// 🔹 Compute weekly revenue & other stats
+  // --------------------------- UPDATE STATS ---------------------------
   void _updateDashboard(QuerySnapshot<Map<String, dynamic>> snapshot) {
     double sales = 0, gst = 0;
     int invoicesCount = 0;
-    Map<int, double> revenueMap = {for (var i = 1; i <= 7; i++) i: 0.0};
 
-    final now = DateTime.now();
-    final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
-    final endOfWeek = startOfWeek.add(const Duration(days: 7));
+    Map<int, double> revenueMap = {for (var i = 1; i <= 7; i++) i: 0};
+
+    DateTime now = DateTime.now();
+    DateTime start = now.subtract(Duration(days: now.weekday - 1));
+    DateTime end = start.add(const Duration(days: 7));
 
     for (var doc in snapshot.docs) {
       final data = doc.data();
       final total = (data['grand_total'] ?? 0).toDouble();
       final gstAmt = (data['gst_amount'] ?? 0).toDouble();
-      final createdAt = (data['created_at'] as Timestamp?)?.toDate();
+
+      // Check created_at first, then invoice_date
+      DateTime? createdAt = (data['created_at'] as Timestamp?)?.toDate();
+      if (createdAt == null && data['invoice_date'] != null) {
+         // Try parsing invoice_date if it's a string or timestamp
+         if (data['invoice_date'] is Timestamp) {
+           createdAt = (data['invoice_date'] as Timestamp).toDate();
+         } else if (data['invoice_date'] is String) {
+           try {
+             createdAt = DateFormat('dd-MM-yyyy').parse(data['invoice_date']);
+           } catch (e) {
+             // Ignore parse error
+           }
+         }
+      }
 
       sales += total;
       gst += gstAmt;
       invoicesCount++;
 
       if (createdAt != null &&
-          createdAt.isAfter(startOfWeek) &&
-          createdAt.isBefore(endOfWeek)) {
-        final weekday = createdAt.weekday; // 1=Mon ... 7=Sun
-        revenueMap[weekday] = (revenueMap[weekday] ?? 0) + total;
+          createdAt.isAfter(start) &&
+          createdAt.isBefore(end)) {
+        int w = createdAt.weekday;
+        revenueMap[w] = (revenueMap[w] ?? 0) + total;
       }
     }
 
-    setState(() {
-      totalSales = sales;
-      totalGST = gst;
-      totalInvoices = invoicesCount;
-      maxRevenue =
-          (revenueMap.values.isEmpty
-              ? 1000
-              : revenueMap.values.reduce((a, b) => a > b ? a : b)) *
-          1.3;
-      revenueData = revenueMap.entries
-          .map(
-            (e) => BarChartGroupData(
-              x: e.key,
-              barRods: [
-                BarChartRodData(
-                  toY: e.value,
-                  color: Colors.blueAccent,
-                  width: 14,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ],
+    maxRevenue =
+        (revenueMap.values.isEmpty
+            ? 0
+            : revenueMap.values.reduce((a, b) => a > b ? a : b)) *
+        1.3;
+
+    revenueData = revenueMap.entries.map((e) {
+      return BarChartGroupData(
+        x: e.key,
+        barRods: [
+          BarChartRodData(
+            toY: e.value,
+            color: _primaryColor,
+            width: 16,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+            backDrawRodData: BackgroundBarChartRodData(
+              show: true,
+              toY: maxRevenue,
+              color: Colors.grey.withOpacity(0.1),
             ),
-          )
-          .toList();
-      isLoading = false;
-    });
+          ),
+        ],
+      );
+    }).toList();
+
+    totalSales = sales;
+    totalGST = gst;
+    totalInvoices = invoicesCount;
+
+    setState(() => isLoading = false);
   }
 
   @override
@@ -182,345 +352,400 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _customerSub?.cancel();
     _productSub?.cancel();
     _paymentSub?.cancel();
+    _supplierSub?.cancel();
+
     super.dispose();
   }
 
-  /// 🔹 Stat Card Builder
-  Widget _buildStatCard({
-    required String title,
-    required String value,
-    required IconData icon,
-    required Color color,
-    VoidCallback? onTap,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 24,
-              backgroundColor: color.withOpacity(0.15),
-              child: Icon(icon, color: color, size: 26),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.black54,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  Text(
-                    value,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+  Widget _buildFAB(BuildContext context) {
+    return FloatingActionButton.extended(
+      backgroundColor: _primaryColor,
+      elevation: 4,
+      icon: const Icon(Icons.add, color: Colors.white),
+      label: const Text(
+        "Create New",
+        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
       ),
+      onPressed: () async {
+        bool ok = await checkPlanActive();
+        if (!ok) return blockedMessage();
+
+        showModalBottomSheet(
+          context: context,
+          backgroundColor: Colors.white,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          builder: (_) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "Quick Actions",
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    _actionTile(
+                      icon: Icons.receipt_long,
+                      color: Colors.blue,
+                      title: "Create Invoice",
+                      subtitle: "Generate a new tax invoice",
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const AddInvoiceScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    _actionTile(
+                      icon: Icons.request_quote,
+                      color: Colors.green,
+                      title: "Create Quotation",
+                      subtitle: "Send an estimate to customer",
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const AddQuotationScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    _actionTile(
+                      icon: Icons.shopping_cart,
+                      color: Colors.orange,
+                      title: "Record Purchase",
+                      subtitle: "Add a purchase entry",
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const PurchaseInvoiceScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
-  /// 🔹 UI Build
+  Widget _actionTile({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+      leading: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: color, size: 24),
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+      ),
+      trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+      onTap: onTap,
+    );
+  }
+
+  // --------------------------- UI ---------------------------
   @override
   Widget build(BuildContext context) {
-    final primary = Theme.of(context).colorScheme.primary;
     final format = NumberFormat.compactCurrency(symbol: "₹");
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F8FB),
+      backgroundColor: _backgroundColor,
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.white,
+        titleSpacing: 20,
         title: Row(
           children: [
-            Icon(Icons.store_rounded, color: primary, size: 28),
-            const SizedBox(width: 8),
-            Text(
-              "Smart Billing Dashboard",
-              style: TextStyle(
-                color: primary,
-                fontWeight: FontWeight.bold,
-                fontSize: 18,
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: _primaryColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
               ),
+              child: Icon(Icons.store_rounded, color: _primaryColor, size: 24),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "Smart Billing",
+                  style: TextStyle(
+                    color: Colors.black87,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+                Text(
+                  "Dashboard",
+                  style: TextStyle(
+                    color: Colors.grey.shade500,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
         actions: [
           IconButton(
-            icon: const Icon(
-              Icons.notifications_active_outlined,
-              color: Colors.black87,
-            ),
+            icon: const Icon(Icons.refresh, color: Colors.black87),
             onPressed: () {
+              _attachRealtimeListeners();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("Refreshing data...")),
+              );
+            },
+          ),
+          IconButton(
+            icon: Stack(
+              children: [
+                const Icon(Icons.notifications_outlined, color: Colors.black87, size: 28),
+                Positioned(
+                  right: 2,
+                  top: 2,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            onPressed: () async {
+              bool ok = await checkPlanActive();
+              if (!ok) return blockedMessage();
+
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const NotificationsScreen()),
               );
             },
           ),
+          const SizedBox(width: 12),
         ],
       ),
-
-      // 🔹 Main Body
+      floatingActionButton: _buildFAB(context),
       body: isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: CircularProgressIndicator(color: _primaryColor))
           : RefreshIndicator(
               onRefresh: () async => _attachRealtimeListeners(),
+              color: _primaryColor,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Summary Section
                     const Text(
-                      "Welcome Back 👋",
+                      "Overview",
                       style: TextStyle(
-                        fontSize: 22,
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
                         color: Colors.black87,
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    Text(
-                      "Your business performance this week",
+                    const SizedBox(height: 16),
+
+                    // Main Stats Cards
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _summaryCard(
+                            "Total Sales",
+                            format.format(totalSales),
+                            Icons.trending_up,
+                            Colors.green,
+                            isPrimary: true,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: _summaryCard(
+                            "Outstanding",
+                            format.format(totalOutstanding),
+                            Icons.warning_amber_rounded,
+                            Colors.orange,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Quick Stats Grid
+                    const Text(
+                      "Quick Stats",
                       style: TextStyle(
-                        color: Colors.grey.shade600,
-                        fontSize: 14,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
                       ),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 16),
 
-                    // 🔹 Overview Cards
-                    Row(
+                    GridView.count(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                      childAspectRatio: 1.5,
                       children: [
-                        Expanded(
-                          child: _buildStatCard(
-                            title: "Total Sales",
-                            value: format.format(totalSales),
-                            icon: Icons.trending_up_rounded,
-                            color: Colors.green,
-                          ),
+                        _statCard(
+                          "Invoices",
+                          totalInvoices.toString(),
+                          Icons.receipt_long,
+                          Colors.blue,
+                          () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InvoicesScreen())),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _buildStatCard(
-                            title: "Invoices",
-                            value: totalInvoices.toString(),
-                            icon: Icons.receipt_long_rounded,
-                            color: Colors.blueAccent,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const InvoicesScreen(),
-                              ),
-                            ),
-                          ),
+                        _statCard(
+                          "Quotations",
+                          totalQuotations.toStringAsFixed(0),
+                          Icons.description_outlined,
+                          Colors.indigo,
+                          () => Navigator.push(context, MaterialPageRoute(builder: (_) => const QuotationsScreen())),
+                        ),
+                        _statCard(
+                          "Customers",
+                          totalCustomers.toString(),
+                          Icons.people_outline,
+                          Colors.teal,
+                          () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CustomersScreen())),
+                        ),
+                        _statCard(
+                          "Products",
+                          totalProducts.toString(),
+                          Icons.inventory_2_outlined,
+                          Colors.purple,
+                          () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProductsScreen())),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 10),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildStatCard(
-                            title: "Outstanding",
-                            value: format.format(totalOutstanding),
-                            icon: Icons.payments_rounded,
-                            color: Colors.orangeAccent,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const PaymentScreen(),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _buildStatCard(
-                            title: "Quotations",
-                            value: totalQuotations.toStringAsFixed(0),
-                            icon: Icons.request_quote_outlined,
-                            color: Colors.indigo,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const QuotationsScreen(),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildStatCard(
-                            title: "Customers",
-                            value: totalCustomers.toString(),
-                            icon: Icons.people_alt_outlined,
-                            color: Colors.teal,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const CustomersScreen(),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _buildStatCard(
-                            title: "Products",
-                            value: totalProducts.toString(),
-                            icon: Icons.inventory_2_rounded,
-                            color: Colors.purple,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const ProductsScreen(),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-
-                    _buildStatCard(
-                      title: "Payment Receipts",
-                      value: format.format(totalPayments),
-                      icon: Icons.account_balance_wallet_rounded,
-                      color: Colors.cyan,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const PaymentReceiptScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-
-                    _buildStatCard(
-                      title: "Total GST",
-                      value: format.format(totalGST),
-                      icon: Icons.account_balance_rounded,
-                      color: Colors.pinkAccent,
                     ),
 
                     const SizedBox(height: 24),
 
-                    // 📊 Weekly Chart
+                    // Weekly Revenue Chart
                     Container(
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(14),
+                        color: _cardColor,
+                        borderRadius: BorderRadius.circular(16),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
+                            color: Colors.black.withOpacity(0.03),
                             blurRadius: 10,
-                            offset: const Offset(0, 5),
+                            offset: const Offset(0, 4),
                           ),
                         ],
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            "Weekly Revenue Trend",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.black87,
-                            ),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    "Revenue Analytics",
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                  Text(
+                                    "Last 7 Days",
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: _primaryColor.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Icon(Icons.bar_chart, color: _primaryColor),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            "Week of ${DateFormat('MMM d').format(DateTime.now().subtract(Duration(days: DateTime.now().weekday - 1)))}",
-                            style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontSize: 12,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 24),
                           SizedBox(
-                            height: 220,
+                            height: 200,
                             child: BarChart(
                               BarChartData(
                                 maxY: maxRevenue,
                                 barGroups: revenueData,
                                 borderData: FlBorderData(show: false),
-
-                                gridData: FlGridData(
-                                  show: true,
-                                  drawVerticalLine: false,
-                                  horizontalInterval: (maxRevenue / 5).clamp(
-                                    100,
-                                    double.infinity,
-                                  ),
-                                ),
-
+                                gridData: const FlGridData(show: false),
                                 titlesData: FlTitlesData(
-                                  leftTitles: AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
+                                  leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                                   bottomTitles: AxisTitles(
                                     sideTitles: SideTitles(
                                       showTitles: true,
-                                      getTitlesWidget: (value, _) {
-                                        const days = [
-                                          'Mon',
-                                          'Tue',
-                                          'Wed',
-                                          'Thu',
-                                          'Fri',
-                                          'Sat',
-                                          'Sun',
-                                        ];
-                                        if (value < 1 || value > 7) {
-                                          return const SizedBox.shrink();
-                                        }
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 8,
-                                          ),
-                                          child: Text(
-                                            days[value.toInt() - 1],
-                                            style: const TextStyle(
-                                              fontSize: 10,
+                                      getTitlesWidget: (value, meta) {
+                                        const days = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+                                        if (value.toInt() > 0 && value.toInt() <= 7) {
+                                          return Padding(
+                                            padding: const EdgeInsets.only(top: 8),
+                                            child: Text(
+                                              days[value.toInt() - 1],
+                                              style: TextStyle(
+                                                color: Colors.grey.shade600,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 12,
+                                              ),
                                             ),
-                                          ),
-                                        );
+                                          );
+                                        }
+                                        return const SizedBox();
                                       },
                                     ),
                                   ),
@@ -533,20 +758,209 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
 
                     const SizedBox(height: 24),
-                    Center(
-                      child: Text(
-                        "Powered by SmartBilling AI",
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey.shade600,
-                          letterSpacing: 0.3,
-                        ),
+
+                    // More Stats
+                    const Text(
+                      "Other Activities",
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
                       ),
                     ),
+                    const SizedBox(height: 16),
+
+                    _listStatTile(
+                      "Purchases",
+                      format.format(totalPurchase),
+                      Icons.shopping_bag_outlined,
+                      Colors.deepOrange,
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PurchaseScreenList())),
+                    ),
+                    _listStatTile(
+                      "Suppliers",
+                      "$totalSuppliers (Due: ${format.format(totalSupplierOutstanding)})",
+                      Icons.local_shipping_outlined,
+                      Colors.brown,
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SupplierScreen())),
+                    ),
+                    _listStatTile(
+                      "Payment Receipts",
+                      format.format(totalPayments),
+                      Icons.receipt,
+                      Colors.cyan,
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentReceiptScreen())),
+                    ),
+                    _listStatTile(
+                      "Purchase Payments",
+                      "View Receipts",
+                      Icons.receipt_long,
+                      Colors.deepPurple,
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PurchasePaymentReceiptScreen())),
+                    ),
+                    _listStatTile(
+                      "Profit & Analytics",
+                      "View Reports",
+                      Icons.analytics_outlined,
+                      Colors.purple,
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfitReportScreen())),
+                    ),
+
+                    const SizedBox(height: 80), // Space for FAB
                   ],
                 ),
               ),
             ),
+    );
+  }
+
+  Widget _summaryCard(String title, String value, IconData icon, Color color, {bool isPrimary = false}) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isPrimary ? _primaryColor : _cardColor,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: (isPrimary ? _primaryColor : Colors.black).withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: isPrimary ? Colors.white.withOpacity(0.2) : color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: isPrimary ? Colors.white : color, size: 20),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: isPrimary ? Colors.white : Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 12,
+              color: isPrimary ? Colors.white.withOpacity(0.8) : Colors.grey.shade600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statCard(String title, String value, IconData icon, Color color, VoidCallback onTap) {
+    return InkWell(
+      onTap: () async {
+        bool allowed = await checkPlanActive();
+        if (!allowed) {
+          blockedMessage();
+          return;
+        }
+        onTap();
+      },
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: _cardColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.grey.shade100),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.02),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Icon(icon, color: color, size: 24),
+                Icon(Icons.arrow_forward, color: Colors.grey.shade300, size: 16),
+              ],
+            ),
+            const Spacer(),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _listStatTile(String title, String value, IconData icon, Color color, VoidCallback onTap) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: _cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade100),
+      ),
+      child: ListTile(
+        onTap: () async {
+          bool allowed = await checkPlanActive();
+          if (!allowed) {
+            blockedMessage();
+            return;
+          }
+          onTap();
+        },
+        leading: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color, size: 20),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
+          ],
+        ),
+      ),
     );
   }
 }

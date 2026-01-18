@@ -3,22 +3,27 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:smartbilling/screens/add_quotation.dart';
+import 'package:smartbilling/contactsupport.dart';
+import 'package:smartbilling/screens/more_options.dart';
 
 // Screens
 import 'config/theme.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/add_invoice_screen.dart';
-
+import 'screens/add_quotation.dart';
 import 'screens/profile_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'login_screen.dart';
-import 'company_details_screen.dart';
+import 'screens/waiting_for_approval_screen.dart';
+import 'screens/accept_invitation_screen.dart';
+import 'package:app_links/app_links.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'services/user_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ Initialize Firebase
+  // Initialize Firebase
   if (Platform.isAndroid) {
     await Firebase.initializeApp(
       options: const FirebaseOptions(
@@ -29,18 +34,6 @@ void main() async {
         storageBucket: "smartbillingsoftware.firebasestorage.app",
       ),
     );
-  } else if (Platform.isIOS) {
-    await Firebase.initializeApp(
-      options: const FirebaseOptions(
-        apiKey: "YOUR_IOS_API_KEY",
-        appId: "YOUR_IOS_APP_ID",
-        messagingSenderId: "YOUR_SENDER_ID",
-        projectId: "smartbillingsoftware",
-        storageBucket: "smartbillingsoftware.firebasestorage.app",
-        iosClientId: "YOUR_IOS_CLIENT_ID",
-        iosBundleId: "com.example.smartbilling",
-      ),
-    );
   } else {
     await Firebase.initializeApp();
   }
@@ -48,20 +41,69 @@ void main() async {
   runApp(const SmartBillingApp());
 }
 
-class SmartBillingApp extends StatelessWidget {
+class SmartBillingApp extends StatefulWidget {
   const SmartBillingApp({super.key});
+
+  @override
+  State<SmartBillingApp> createState() => _SmartBillingAppState();
+}
+
+class _SmartBillingAppState extends State<SmartBillingApp> {
+  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  late AppLinks _appLinks;
+
+  @override
+  void initState() {
+    super.initState();
+    _initDeepLinks();
+  }
+
+  void _initDeepLinks() async {
+    _appLinks = AppLinks();
+
+    // Handle initial link
+    try {
+      final uri = await _appLinks.getInitialLink();
+      if (uri != null) {
+        _processDeepLink(uri);
+      }
+    } catch (e) {
+      // Handle error
+    }
+
+    // Handle incoming links
+    _appLinks.uriLinkStream.listen((uri) {
+      _processDeepLink(uri);
+    });
+  }
+
+  void _processDeepLink(Uri uri) {
+    if (uri.scheme == 'smartbilling' && uri.host == 'join') {
+      final code = uri.queryParameters['code'];
+      if (code != null && code.isNotEmpty) {
+        // Navigate to AcceptInvitationScreen with code
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => AcceptInvitationScreen(invitationCode: code),
+          ),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Smart Billing System',
+      navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
+      title: "Smart Billing",
       theme: appTheme,
       home: const AuthGate(),
     );
   }
 }
 
+// ====================== AUTH GATE =============================
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
@@ -70,52 +112,170 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  bool _loading = true;
-  Widget? _startScreen;
+  bool loading = true;
+  Widget? screen;
 
   @override
   void initState() {
     super.initState();
-    _checkUserFlow();
+    checkUser();
   }
 
-  Future<void> _checkUserFlow() async {
+  Future<void> checkUser() async {
     try {
+      // 1. Check for Staff Session (Username Login)
+      final prefs = await SharedPreferences.getInstance();
+      final staffId = prefs.getString('current_staff_id');
+
+      if (staffId != null) {
+        // Staff is logged in
+        screen = MainNavigation();
+        setState(() => loading = false);
+        return;
+      }
+
+      // 2. Check for Owner Session (Firebase Auth)
       final user = FirebaseAuth.instance.currentUser;
 
+      // Not logged in
       if (user == null) {
-        _startScreen = const LoginScreen();
-      } else {
-        final companyDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .collection('company')
-            .doc('details')
+        screen = const LoginScreen();
+        setState(() => loading = false);
+        return;
+      }
+
+      final doc = await FirebaseFirestore.instance
+          .collection("users")
+          .doc(user.uid)
+          .get();
+
+      if (!doc.exists) {
+        await FirebaseAuth.instance.signOut();
+        screen = const LoginScreen();
+        setState(() => loading = false);
+        return;
+      }
+
+      final data = doc.data()!;
+
+      // Check for pending approval status
+      final status = data['status'];
+      if (status == 'pending_approval') {
+        screen = const WaitingForApprovalScreen();
+        setState(() => loading = false);
+        return;
+      }
+
+      // Check if user is staff (has businessId different from uid)
+      String? businessId = data['businessId'];
+      bool isStaff = businessId != null && businessId != user.uid;
+      Map<String, dynamic> planData = data;
+
+      // If staff, fetch owner's data for plan check
+      if (isStaff) {
+        final ownerDoc = await FirebaseFirestore.instance
+            .collection("users")
+            .doc(businessId)
             .get();
 
-        if (companyDoc.exists && companyDoc.data()?['name'] != null) {
-          _startScreen = const MainNavigation();
+        if (ownerDoc.exists) {
+          planData = ownerDoc.data()!;
         } else {
-          _startScreen = const CompanyDetailsScreen();
+          // Owner not found, allow access anyway
+          screen = const MainNavigation();
+          setState(() => loading = false);
+          return;
         }
       }
-    } catch (e) {
-      debugPrint("🔥 Auth flow error: $e");
-      _startScreen = const LoginScreen();
-    }
 
-    if (mounted) setState(() => _loading = false);
+      final plan = planData["plan"];
+      final expiry = planData["expiry"] != null
+          ? (planData["expiry"] as Timestamp).toDate()
+          : null;
+
+      // For staff: if owner has no plan/expiry, allow access
+      // For owner: if no plan/expiry, redirect to login
+      if (plan == null || expiry == null) {
+        if (isStaff) {
+          // Staff can access if owner hasn't set up plan yet
+          screen = const MainNavigation();
+          setState(() => loading = false);
+          return;
+        } else {
+          // Owner needs to have plan - but allow access for now
+          screen = const MainNavigation();
+          setState(() => loading = false);
+          return;
+        }
+      }
+
+      // Expired
+      if (expiry.isBefore(DateTime.now())) {
+        await FirebaseAuth.instance.signOut();
+        screen = const ExpiredScreen();
+        setState(() => loading = false);
+        return;
+      }
+
+      // Valid user → allow in
+      screen = const MainNavigation();
+      setState(() => loading = false);
+    } catch (e) {
+      screen = const LoginScreen();
+      setState(() => loading = false);
+      debugPrint("AUTH ERROR: $e");
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    if (loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    return _startScreen!;
+    return screen!;
   }
 }
 
+// ==================== EXPIRED SCREEN ==========================
+class ExpiredScreen extends StatelessWidget {
+  const ExpiredScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(25),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock_clock, size: 80, color: Colors.red),
+              const SizedBox(height: 20),
+              const Text(
+                "Your plan has expired.\nPlease contact admin.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 15),
+              ElevatedButton(
+                onPressed: () async {
+                  await FirebaseAuth.instance.signOut();
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  );
+                },
+                child: const Text("OK"),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ==================== MAIN NAVIGATION =========================
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
 
@@ -128,17 +288,89 @@ class _MainNavigationState extends State<MainNavigation> {
 
   final List<Widget> _screens = const [
     DashboardScreen(),
-    SizedBox(), // Placeholder for the "New" button
-    ProfileScreen(),
+    SizedBox(), // Placeholder for Create (Index 1)
+    ProfileScreen(), // Profile (Index 2)
+    MoreScreen(), // More (Index 3)
   ];
 
   final List<String> _titles = [
-    'Smart Billing Dashboard',
-    'Create Document',
-    'My Profile',
+    "Smart Billing Dashboard",
+    "Create Document",
+    "My Profile",
+    "More Options",
   ];
 
-  void _showCreateOptions(BuildContext context) {
+  // 🔥 BLOCK navigation if expired - checks owner's plan for staff
+  Future<bool> _checkActive(BuildContext context) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return false;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection("users")
+          .doc(user.uid)
+          .get();
+
+      final data = doc.data() ?? {};
+
+      // Check if user is staff (has businessId different from their uid)
+      String? businessId = data['businessId'];
+      Map<String, dynamic> planData = data;
+
+      // If staff, fetch owner's data for plan check
+      if (businessId != null && businessId != user.uid) {
+        final ownerDoc = await FirebaseFirestore.instance
+            .collection("users")
+            .doc(businessId)
+            .get();
+
+        if (ownerDoc.exists) {
+          planData = ownerDoc.data()!;
+        }
+      }
+
+      final expiry = planData["expiry"] != null
+          ? (planData["expiry"] as Timestamp).toDate()
+          : null;
+
+      // If no expiry found, allow access (for backward compatibility)
+      if (expiry == null) {
+        return true;
+      }
+
+      if (expiry.isBefore(DateTime.now())) {
+        // SHOW popup
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text("Plan Expired"),
+            content: const Text("Please contact admin."),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  FirebaseAuth.instance.signOut();
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  );
+                },
+                child: const Text("OK"),
+              ),
+            ],
+          ),
+        );
+        return false;
+      }
+      return true;
+    } catch (e) {
+      debugPrint("Error checking plan: $e");
+      return true; // Allow access on error to not block users
+    }
+  }
+
+  void _showCreateOptions(BuildContext context) async {
+    if (!await _checkActive(context)) return; // BLOCK HERE
+
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -147,26 +379,15 @@ class _MainNavigationState extends State<MainNavigation> {
       builder: (_) {
         return SafeArea(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            child: Wrap(
-              runSpacing: 10,
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Center(
-                  child: Container(
-                    width: 50,
-                    height: 4,
-                    margin: const EdgeInsets.only(bottom: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade300,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                ),
                 ListTile(
                   leading: const Icon(Icons.receipt_long, color: Colors.blue),
                   title: const Text("Create Invoice"),
-                  onTap: () {
-                    Navigator.pop(context);
+                  onTap: () async {
+                    if (!await _checkActive(context)) return;
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -176,13 +397,10 @@ class _MainNavigationState extends State<MainNavigation> {
                   },
                 ),
                 ListTile(
-                  leading: const Icon(
-                    Icons.request_quote_outlined,
-                    color: Colors.green,
-                  ),
+                  leading: const Icon(Icons.request_quote, color: Colors.green),
                   title: const Text("Create Quotation"),
-                  onTap: () {
-                    Navigator.pop(context);
+                  onTap: () async {
+                    if (!await _checkActive(context)) return;
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -206,50 +424,54 @@ class _MainNavigationState extends State<MainNavigation> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_titles[_selectedIndex]),
-        centerTitle: true,
+        automaticallyImplyLeading: false,
         backgroundColor: primary,
+        centerTitle: true,
         actions: [
+          // 🔔 Notifications
           IconButton(
-            icon: const Icon(Icons.notifications_active_outlined),
-            tooltip: "Notifications",
-            onPressed: () {
+            icon: const Icon(Icons.notifications),
+            onPressed: () async {
+              if (!await _checkActive(context)) return;
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const NotificationsScreen()),
               );
             },
           ),
-          const SizedBox(width: 6),
+
+          // 🎧 Contact Support
+          IconButton(
+            icon: const Icon(Icons.support_agent),
+            tooltip: "Contact Support",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ContactSupportScreen()),
+              );
+            },
+          ),
         ],
       ),
-      body: _selectedIndex == 1 ? const SizedBox() : _screens[_selectedIndex],
+
+      body: _screens[_selectedIndex],
       bottomNavigationBar: NavigationBar(
-        height: 65,
-        backgroundColor: Colors.white,
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
+        onDestinationSelected: (index) async {
+
           if (index == 1) {
             _showCreateOptions(context);
-          } else {
-            setState(() => _selectedIndex = index);
+            return;
           }
+          // Index 0 (Home), 2 (Profile), 3 (More) -> Switch Tab
+          if (!await _checkActive(context)) return;
+          setState(() => _selectedIndex = index);
         },
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.add_circle_outline),
-            selectedIcon: Icon(Icons.add_circle),
-            label: 'New',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profile',
-          ),
+          NavigationDestination(icon: Icon(Icons.home), label: "Home"),
+          NavigationDestination(icon: Icon(Icons.add_circle_outline), label: "Create"),
+          NavigationDestination(icon: Icon(Icons.person), label: "Profile"),
+          NavigationDestination(icon: Icon(Icons.menu), label: "More"),
         ],
       ),
     );

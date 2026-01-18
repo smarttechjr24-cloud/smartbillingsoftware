@@ -17,13 +17,31 @@ class AddInvoiceScreen extends StatefulWidget {
 class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
   final _formKey = GlobalKey<FormState>();
 
+  // Indian States List
+  final List<String> _indianStates = const [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand",
+    "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur",
+    "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab",
+    "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
+    "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Andaman and Nicobar Islands", "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu", "Delhi",
+    "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
+  ];
+
   // Customer fields
   final _customerController = TextEditingController();
   final _mobileController = TextEditingController();
   final _fromController = TextEditingController();
   final _toController = TextEditingController();
+  final _gstinController = TextEditingController();
   final _noteController = TextEditingController();
   final _gstController = TextEditingController(text: "5");
+  
+  // State tracking
+  String _customerState = "Tamil Nadu";
+  bool _enableGST = true; // Default to true
 
   // Suggestions
   List<String> _customerSuggestions = [];
@@ -50,6 +68,30 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
   void initState() {
     super.initState();
     dueDate = invoiceDate.add(const Duration(days: 7));
+    _loadGSTPreference();
+  }
+
+  Future<void> _loadGSTPreference() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('settings')
+          .doc('billing')
+          .get();
+      if (doc.exists) {
+        setState(() {
+          _enableGST = doc.data()?['enable_gst'] ?? true;
+          if (!_enableGST) {
+            _gstController.text = "0";
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint("Error loading GST preference: $e");
+    }
   }
 
   @override
@@ -58,6 +100,7 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
     _mobileController.dispose();
     _fromController.dispose();
     _toController.dispose();
+    _gstinController.dispose();
     _noteController.dispose();
     _gstController.dispose();
     super.dispose();
@@ -149,6 +192,65 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
           .toList();
     });
   }
+  
+  Future<void> _fetchCustomerDetails(String name) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || name.trim().isEmpty) return;
+
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('customers')
+          .where('name', isEqualTo: name)
+          .limit(1)
+          .get();
+
+      if (snap.docs.isNotEmpty) {
+        final data = snap.docs.first.data();
+        setState(() {
+          _mobileController.text = (data['mobile'] ?? '').toString();
+          _gstinController.text = (data['gstin'] ?? '').toString();
+          
+          // Try billing_address first, then fallback to address
+          final billingAddr = (data['billing_address'] ?? data['address'] ?? '').toString();
+          _fromController.text = billingAddr;
+          
+          _toController.text = (data['shipping_address'] ?? '').toString();
+          
+          // Update state if valid
+          final state = (data['state'] ?? '').toString();
+          if (_indianStates.contains(state)) {
+            _customerState = state;
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint("Error fetching customer details: $e");
+    }
+  }
+
+  Widget _buildSummaryRow(String label, double amount) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.grey.shade700,
+            fontSize: 14,
+          ),
+        ),
+        Text(
+          '₹${amount.toStringAsFixed(2)}',
+          style: const TextStyle(
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _buildNavButton({
     required IconData icon,
@@ -215,9 +317,6 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
     });
   }
 
-  // -------------------------------------------------------------
-  // Add item dialog with validation + product auto-create
-  // -------------------------------------------------------------
   Future<void> _openAddItemDialog({
     Map<String, dynamic>? existingItem,
     int? index,
@@ -227,10 +326,15 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
       text: (existingItem?['qty']?.toString() ?? '1'),
     );
     final rateCtrl = TextEditingController(
-      text: (existingItem?['rate']?.toString() ?? ''),
+      text: (existingItem?['rate']?.toString() ?? '0'),
     );
-    String? selectedUnit = existingItem?['unit'];
-    String taxType = existingItem?['tax_type'] ?? "Without Tax";
+    final discountCtrl = TextEditingController(
+      text: (existingItem?['discount']?.toString() ?? '0'),
+    );
+    final gstCtrl = TextEditingController(
+      text: (existingItem?['gst']?.toString() ?? _gstController.text),
+    );
+    String? selectedUnit = existingItem?['unit'] ?? 'Unit';
     final formKey = GlobalKey<FormState>();
 
     List<Map<String, dynamic>> productSuggestions = [];
@@ -304,10 +408,6 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
     await showDialog(
       context: context,
       builder: (context) {
-        final size = MediaQuery.of(context).size;
-        final dialogWidth = size.width * 0.92;
-        final dialogHeight = size.height * 0.68;
-
         return StatefulBuilder(
           builder: (context, setSB) {
             void applySuggestion(Map<String, dynamic> p) {
@@ -317,11 +417,13 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
               setSB(() => productSuggestions.clear());
             }
 
-            Future<void> handleSave({bool andNew = false}) async {
+            Future<void> handleSave() async {
               if (!formKey.currentState!.validate()) return;
 
               final qty = double.tryParse(qtyCtrl.text) ?? 0;
               final rate = double.tryParse(rateCtrl.text) ?? 0;
+              final discount = double.tryParse(discountCtrl.text) ?? 0;
+              final gst = double.tryParse(gstCtrl.text) ?? 0;
 
               // 🧠 Auto-create product in Firestore
               await _ensureProductExists(
@@ -335,7 +437,8 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
                 'qty': qty,
                 'rate': rate,
                 'unit': selectedUnit ?? "Unit",
-                'tax_type': taxType,
+                'discount': discount,
+                'gst': gst,
                 'lineTotal': qty * rate,
               };
 
@@ -349,38 +452,26 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
                 _recalculateTotals();
               });
 
-              if (andNew) {
-                itemCtrl.clear();
-                qtyCtrl.text = '1';
-                rateCtrl.clear();
-                selectedUnit = null;
-                setSB(() => productSuggestions.clear());
-              } else {
-                Navigator.pop(context);
-              }
+              Navigator.pop(context);
             }
 
             return AlertDialog(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
               ),
-              insetPadding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 24,
-              ),
-              title: Text(
-                existingItem != null ? "Edit Item" : "Add New Item",
-                style: const TextStyle(fontWeight: FontWeight.bold),
+              title: const Text(
+                "Add Item",
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
               content: SizedBox(
-                width: dialogWidth,
-                height: dialogHeight,
+                width: MediaQuery.of(context).size.width * 0.85,
                 child: Form(
                   key: formKey,
                   child: SingleChildScrollView(
                     child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        // 🧠 Product AJAX Search
+                        // Item Name
                         TextFormField(
                           controller: itemCtrl,
                           decoration: const InputDecoration(
@@ -393,7 +484,7 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
                               : null,
                         ),
 
-                        // 🔹 Dynamic suggestion box
+                        // Product Suggestions
                         if (productSuggestions.isNotEmpty) ...[
                           const SizedBox(height: 6),
                           Container(
@@ -416,9 +507,9 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
                             ),
                           ),
                         ],
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
 
-                        // Quantity + Unit
+                        // Qty and Unit Row
                         Row(
                           children: [
                             Expanded(
@@ -426,7 +517,7 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
                                 controller: qtyCtrl,
                                 keyboardType: TextInputType.number,
                                 decoration: const InputDecoration(
-                                  labelText: "Quantity",
+                                  labelText: "Qty",
                                   border: OutlineInputBorder(),
                                 ),
                                 validator: (v) {
@@ -440,114 +531,84 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
                             Expanded(
                               child: DropdownButtonFormField<String>(
                                 value: selectedUnit,
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: 'Unit',
-                                    child: Text('Unit'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'Kg',
-                                    child: Text('Kg'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'Piece',
-                                    child: Text('Piece'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'Dozen',
-                                    child: Text('Dozen'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'Litre',
-                                    child: Text('Litre'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'Box',
-                                    child: Text('Box'),
-                                  ),
-                                ],
-                                onChanged: (v) => setSB(() => selectedUnit = v),
                                 decoration: const InputDecoration(
                                   labelText: "Unit",
                                   border: OutlineInputBorder(),
                                 ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-
-                        // Rate + Tax
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextFormField(
-                                controller: rateCtrl,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: "Rate (₹)",
-                                  border: OutlineInputBorder(),
-                                ),
-                                validator: (v) {
-                                  final n = double.tryParse(v ?? '');
-                                  if (n == null || n <= 0) return 'Rate > 0';
-                                  return null;
-                                },
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: taxType,
                                 items: const [
-                                  DropdownMenuItem(
-                                    value: "Without Tax",
-                                    child: Text("Without Tax"),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: "Inclusive",
-                                    child: Text("Inclusive"),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: "Exclusive",
-                                    child: Text("Exclusive"),
-                                  ),
+                                  DropdownMenuItem(value: 'Unit', child: Text('Unit')),
+                                  DropdownMenuItem(value: 'Piece', child: Text('Piece')),
+                                  DropdownMenuItem(value: 'Kg', child: Text('Kg')),
+                                  DropdownMenuItem(value: 'Gram', child: Text('Gram')),
+                                  DropdownMenuItem(value: 'Ton', child: Text('Ton')),
+                                  DropdownMenuItem(value: 'Litre', child: Text('Litre')),
+                                  DropdownMenuItem(value: 'Meter', child: Text('Meter')),
+                                  DropdownMenuItem(value: 'Box', child: Text('Box')),
+                                  DropdownMenuItem(value: 'Carton', child: Text('Carton')),
+                                  DropdownMenuItem(value: 'Bag', child: Text('Bag')),
+                                  DropdownMenuItem(value: 'Packet', child: Text('Packet')),
+                                  DropdownMenuItem(value: 'Dozen', child: Text('Dozen')),
                                 ],
-                                onChanged: (v) =>
-                                    setSB(() => taxType = v ?? "Without Tax"),
-                                decoration: const InputDecoration(
-                                  labelText: "Tax Type",
-                                  border: OutlineInputBorder(),
-                                ),
+                                onChanged: (v) => setSB(() => selectedUnit = v),
                               ),
                             ),
                           ],
                         ),
+                        const SizedBox(height: 12),
+
+                        // Rate
+                        TextFormField(
+                          controller: rateCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: "Rate",
+                            border: OutlineInputBorder(),
+                          ),
+                          validator: (v) {
+                            final n = double.tryParse(v ?? '');
+                            if (n == null || n <= 0) return 'Rate > 0';
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Discount
+                        TextFormField(
+                          controller: discountCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: "Discount",
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // GST %
+                        if (_enableGST)
+                          TextFormField(
+                            controller: gstCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              labelText: "GST %",
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
                       ],
                     ),
                   ),
                 ),
               ),
               actions: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        onPressed: () => handleSave(andNew: true),
-                        child: const Text("Save & New"),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => handleSave(andNew: false),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green.shade700,
-                        ),
-                        child: const Text("Save Item"),
-                      ),
-                    ),
-                  ],
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("Cancel"),
+                ),
+                ElevatedButton(
+                  onPressed: handleSave,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                  ),
+                  child: const Text("Save"),
                 ),
               ],
             );
@@ -610,7 +671,7 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
       0.0,
       (sum, i) => sum + ((i['lineTotal'] ?? 0.0) as double),
     );
-    final gstPercent = double.tryParse(_gstController.text) ?? 0;
+    final gstPercent = _enableGST ? (double.tryParse(_gstController.text) ?? 0) : 0.0;
     gst = subtotal * gstPercent / 100;
     grandTotal = subtotal + gst;
     setState(() {});
@@ -689,37 +750,152 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
       }
 
       // Re-fetch customer to update outstanding
+      // Re-fetch customer to update outstanding
       final customerDoc =
           (await customersRef.where('name', isEqualTo: custName).limit(1).get())
               .docs
               .first;
       final currentOutstanding = (customerDoc['outstanding'] ?? 0).toDouble();
-      final newOutstanding = currentOutstanding + grandTotal;
+      
+      // 🔹 Calculate tax breakdown per item
+      const String companyState = 'Tamil Nadu'; // TODO: Get from company settings
+      final String customerState = _customerState; 
+      final bool isInterstate = customerState.trim().toLowerCase() != companyState.trim().toLowerCase();
+      final String taxType = isInterstate ? 'IGST' : 'CGST_SGST';
+      
+      final gstPercent = double.tryParse(_gstController.text) ?? 0.0;
+      
+      double calculatedSubtotal = 0.0;
+      double totalCgst = 0.0;
+      double totalSgst = 0.0;
+      double totalIgst = 0.0;
+      
+      final List<Map<String, dynamic>> cleanedItems = [];
+      
+      for (var item in items) {
+        final qty = (item['qty'] as num?)?.toDouble() ?? 0.0;
+        final rate = (item['rate'] as num?)?.toDouble() ?? 0.0;
+        final discount = 0.0; // No discount in current UI
+        
+        final baseAmount = qty * rate;
+        final discountAmount = baseAmount * (discount / 100);
+        final taxableAmount = baseAmount - discountAmount;
+        
+        double cgst = 0.0;
+        double sgst = 0.0;
+        double igst = 0.0;
+        
+        if (isInterstate) {
+          igst = taxableAmount * (gstPercent / 100);
+        } else {
+          cgst = taxableAmount * (gstPercent / 2 / 100);
+          sgst = taxableAmount * (gstPercent / 2 / 100);
+        }
+        
+        final lineTotal = taxableAmount + cgst + sgst + igst;
+        
+        calculatedSubtotal += taxableAmount;
+        totalCgst += cgst;
+        totalSgst += sgst;
+        totalIgst += igst;
+        
+        // Fetch HSN code from product
+        String hsnCode = '';
+        try {
+          final productQuery = await userRef
+              .collection('products')
+              .where('name', isEqualTo: item['item'] ?? '')
+              .limit(1)
+              .get();
+          
+          if (productQuery.docs.isNotEmpty) {
+            hsnCode = productQuery.docs.first.data()['hsn_code'] ?? '';
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error fetching HSN code: $e');
+        }
+        
+        cleanedItems.add({
+          'item_name': item['item'] ?? '',
+          'qty': qty,
+          'rate': rate,
+          'discount': discount,
+          'gst_percent': gstPercent,
+          'taxable_amount': taxableAmount,
+          'cgst': cgst,
+          'sgst': sgst,
+          'igst': igst,
+          'line_total': lineTotal,
+          'hsn_code': hsnCode,
+          'unit': item['unit'] ?? 'Unit',
+        });
+      }
+      
+      final gstAmountTotal = totalCgst + totalSgst + totalIgst;
+      final calculatedGrandTotal = calculatedSubtotal + gstAmountTotal;
+      final newOutstanding = currentOutstanding + calculatedGrandTotal;
 
-      // Prepare invoice
+      // Prepare invoice with complete data structure
       final invoiceData = {
         'invoice_number': nextInvoiceNo,
         'customer_name': custName,
         'mobile': _mobileController.text.trim(),
         'billing_address': _fromController.text.trim(),
         'shipping_address': _toController.text.trim(),
-        'gst_percentage': double.tryParse(_gstController.text) ?? 0.0,
+        'customer_gstin': _gstinController.text.trim(),
+        'customer_state': customerState,
+        'customer_state_code': '33', // TODO: Get from state mapping
+        'place_of_supply': customerState,
+        'tax_type': taxType,
+        'gst_percentage': gstPercent,
         'note': _noteController.text.trim(),
         'invoice_date': invoiceDate.toIso8601String(),
         'due_date': dueDate.toIso8601String(),
-        'subtotal': subtotal,
-        'gst_amount': gst,
-        'grand_total': grandTotal,
-        'created_at': FieldValue.serverTimestamp(),
-        'items': items,
+        'subtotal': calculatedSubtotal,
+        'cgst_total': totalCgst,
+        'sgst_total': totalSgst,
+        'igst_total': totalIgst,
+        'gst_amount': gstAmountTotal,
+        'grand_total': calculatedGrandTotal,
+        'items': cleanedItems,
         'status': 'Pending',
         'outstanding_after_invoice': newOutstanding,
+        'created_at': FieldValue.serverTimestamp(), // Required for invoices screen query
       };
 
       await invoicesRef.add(invoiceData);
 
       // Update customer's outstanding
       await customerDoc.reference.update({'outstanding': newOutstanding});
+
+      // 🔹 Update Stock - Deduct quantities sold
+      for (var item in cleanedItems) {
+        final itemName = (item['item_name'] ?? '').toString().trim();
+        if (itemName.isEmpty) continue;
+
+        try {
+          // Find product by name
+          final productQuery = await userRef
+              .collection('products')
+              .where('name', isEqualTo: itemName)
+              .limit(1)
+              .get();
+
+          if (productQuery.docs.isNotEmpty) {
+            final productRef = productQuery.docs.first.reference;
+            final qty = (item['qty'] as num?)?.toDouble() ?? 0.0;
+            
+            // Deduct stock
+            await productRef.update({
+              'stock': FieldValue.increment(-qty),
+              'updated_at': FieldValue.serverTimestamp(),
+            });
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error updating stock for $itemName: $e');
+          // Continue with other items even if one fails
+        }
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -831,231 +1007,217 @@ class _AddInvoiceScreenState extends State<AddInvoiceScreen> {
 
               const SizedBox(height: 20),
 
-              // Customer Info Card
-              Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+              // Customer Section - Simplified
+              TextFormField(
+                controller: _customerController,
+                decoration: const InputDecoration(
+                  labelText: "Customer Name",
+                  prefixIcon: Icon(Icons.person),
+                  border: OutlineInputBorder(),
                 ),
-                elevation: 2,
-                margin: const EdgeInsets.only(bottom: 20),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
+                onChanged: _searchCustomers,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Customer required'
+                    : null,
+              ),
+              if (_customerSuggestions.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: Column(
-                    children: [
-                      // Customer name with suggestions
-                      TextFormField(
-                        controller: _customerController,
-                        decoration: const InputDecoration(
-                          labelText: "Customer Name",
-                          prefixIcon: Icon(Icons.person),
-                        ),
-                        onChanged: _searchCustomers,
-                        validator: (v) => (v == null || v.trim().isEmpty)
-                            ? 'Customer required'
-                            : null,
-                      ),
-                      if (_customerSuggestions.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Container(
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade50,
-                            border: Border.all(color: Colors.grey.shade300),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Column(
-                            children: _customerSuggestions.map((name) {
-                              return ListTile(
-                                dense: true,
-                                title: Text(name),
-                                onTap: () {
-                                  _customerController.text = name;
-                                  setState(() => _customerSuggestions = []);
-                                },
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: _mobileController,
-                        keyboardType: TextInputType.phone,
-                        decoration: const InputDecoration(
-                          labelText: "Mobile Number",
-                          prefixIcon: Icon(Icons.phone),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: _fromController,
-                        maxLines: 3,
-                        decoration: const InputDecoration(
-                          labelText: "From (Address)",
-                          prefixIcon: Icon(Icons.home_outlined),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: _toController,
-                        maxLines: 3,
-                        decoration: const InputDecoration(
-                          labelText: "To (Address)",
-                          prefixIcon: Icon(Icons.location_on_outlined),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                    ],
+                    children: _customerSuggestions.map((name) {
+                      return ListTile(
+                        dense: true,
+                        title: Text(name),
+                        onTap: () {
+                          _customerController.text = name;
+                          setState(() => _customerSuggestions = []);
+                          _fetchCustomerDetails(name);
+                        },
+                      );
+                    }).toList(),
                   ),
                 ),
+              ],
+              const SizedBox(height: 12),
+
+              // Phone and State in Row
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _mobileController,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: "Phone",
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _indianStates.contains(_customerState) ? _customerState : null,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: "State (POS)",
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _indianStates.map((state) {
+                        return DropdownMenuItem(
+                          value: state,
+                          child: Text(
+                            state,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() {
+                            _customerState = val;
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
               ),
+              const SizedBox(height: 12),
+
+              // Billing Address
+              TextFormField(
+                controller: _fromController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: "Billing Address",
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 20),
 
               // Items Section
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    "Invoice Items",
+                    "Items List",
                     style: theme.textTheme.titleMedium!.copyWith(
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
                     ),
                   ),
-                  ElevatedButton.icon(
+                  OutlinedButton.icon(
                     onPressed: _openAddItemDialog,
-                    icon: const Icon(Icons.add),
-                    label: const Text("Add Items"),
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text("Add Item"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.blue.shade700,
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
 
-              if (items.isNotEmpty)
-                Card(
-                  elevation: 2,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: DataTable(
-                      headingRowColor: MaterialStateProperty.all(
-                        Colors.blue.shade50,
-                      ),
-                      columns: const [
-                        DataColumn(label: Text("S.No")),
-                        DataColumn(label: Text("Item")),
-                        DataColumn(label: Text("Qty")),
-                        DataColumn(label: Text("Rate")),
-                        DataColumn(label: Text("Line Total")),
-                        DataColumn(label: Text("Action")),
-                      ],
-                      rows: List.generate(items.length, (index) {
-                        final item = items[index];
-                        return DataRow(
-                          cells: [
-                            DataCell(Text("${index + 1}")),
-                            DataCell(Text(item['item'] ?? '-')),
-                            DataCell(Text(item['qty'].toString())),
-                            DataCell(
-                              Text(
-                                '₹${(item['rate'] as double).toStringAsFixed(2)}',
-                              ),
-                            ),
-                            DataCell(
-                              Text(
-                                '₹${(item['lineTotal'] as double).toStringAsFixed(2)}',
-                              ),
-                            ),
-                            DataCell(
-                              Row(
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.edit,
-                                      color: Colors.teal,
-                                    ),
-                                    tooltip: "Edit Item",
-                                    onPressed: () => _openAddItemDialog(
-                                      existingItem: items[index],
-                                      index: index,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.delete,
-                                      color: Colors.red,
-                                    ),
-                                    tooltip: "Delete Item",
-                                    onPressed: () => _removeItem(index),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        );
-                      }),
+              // Items Display or Empty State
+              if (items.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(40),
+                  alignment: Alignment.center,
+                  child: Text(
+                    "No items added yet",
+                    style: TextStyle(
+                      color: Colors.grey.shade500,
+                      fontSize: 14,
                     ),
                   ),
-                ),
-
-              // Totals
-              Align(
-                alignment: Alignment.centerRight,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text("Subtotal: ₹${subtotal.toStringAsFixed(2)}"),
-                    Text("GST: ₹${gst.toStringAsFixed(2)}"),
-                    const SizedBox(height: 6),
-                    Text(
-                      "Grand Total: ₹${grandTotal.toStringAsFixed(2)}",
-                      style: theme.textTheme.titleMedium!.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue.shade900,
-                        fontSize: 18,
+                )
+              else
+                ...items.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final item = entry.value;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      title: Text(
+                        item['item'] ?? '-',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        'Qty: ${item['qty']} × ₹${(item['rate'] as double).toStringAsFixed(2)}',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '₹${(item['lineTotal'] as double).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.edit, color: Colors.blue),
+                            onPressed: () => _openAddItemDialog(
+                              existingItem: items[index],
+                              index: index,
+                            ),
+                            tooltip: "Edit Item",
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () => _removeItem(index),
+                            tooltip: "Delete Item",
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-              ),
+                  );
+                }).toList(),
+
               const SizedBox(height: 20),
 
-              // GST + Note
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _gstController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: "GST Percentage (%)",
-                        prefixIcon: Icon(Icons.percent),
-                      ),
-                      onChanged: (_) => _recalculateTotals(),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _noteController,
-                      decoration: const InputDecoration(
-                        labelText: "Notes (optional)",
-                        prefixIcon: Icon(Icons.note_alt_outlined),
-                      ),
-                    ),
-                  ),
-                ],
+              // Tax Summary
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Column(
+                  children: [
+                    _buildSummaryRow("Taxable Amount", subtotal),
+                    const SizedBox(height: 8),
+                    _buildSummaryRow("CGST Total", gst / 2),
+                    const SizedBox(height: 8),
+                    _buildSummaryRow("SGST Total", gst / 2),
+                  ],
+                ),
               ),
               const SizedBox(height: 30),
 
               // Save Button
-              ElevatedButton.icon(
+              ElevatedButton(
                 onPressed: _saveInvoice,
-                icon: const Icon(Icons.save_alt_rounded),
-                label: const Text("Save Invoice"),
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 50),
+                  backgroundColor: const Color(0xFF1F3A5F),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: const Text(
+                  "SAVE INVOICE",
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ],

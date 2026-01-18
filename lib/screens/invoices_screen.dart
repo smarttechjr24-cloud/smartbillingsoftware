@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:smartbilling/utils/delivery_chellan.dart';
+import 'package:smartbilling/utils/invoices/templateE.dart';
+import 'package:smartbilling/utils/invoices/templateb.dart';
 import '../utils/pdf.dart';
+import '../utils/signature_repository.dart';
 import 'add_invoice_screen.dart';
 
 class InvoicesScreen extends StatefulWidget {
@@ -25,12 +28,23 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _getInvoices() {
     if (_uid == null) return const Stream.empty();
-    return _firestore
-        .collection('users')
-        .doc(_uid)
-        .collection('invoices')
-        .orderBy('created_at', descending: true)
-        .snapshots();
+    
+    try {
+      return _firestore
+          .collection('users')
+          .doc(_uid)
+          .collection('invoices')
+          .orderBy('created_at', descending: true)
+          .snapshots();
+    } catch (e) {
+      // Fallback if created_at index doesn't exist
+      debugPrint('⚠️ Error with created_at orderBy, using invoice_date: $e');
+      return _firestore
+          .collection('users')
+          .doc(_uid)
+          .collection('invoices')
+          .snapshots();
+    }
   }
 
   String _formatTimestamp(dynamic ts) {
@@ -130,10 +144,20 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     bool printDirectly = false,
   }) async {
     try {
-      print(data);
+      // Load signature before generating PDF
+      final signatureBytes = await SignatureRepository.getSignature();
+      
+      // Add signature to data map (temporary for PDF generation)
+      // Or better, update PdfService to accept signatureBytes separately or handle it internally.
+      // Since PdfService.generateAndOpenPDF takes cachedData, let's inject it there.
+      final pdfData = Map<String, dynamic>.from(data);
+      if (signatureBytes != null) {
+        pdfData['signature_bytes'] = signatureBytes;
+      }
+
       await PdfService.generateAndOpenPDF(
         id,
-        cachedData: data,
+        cachedData: pdfData,
         printDirectly: printDirectly,
       );
     } catch (e) {
@@ -466,18 +490,42 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       },
     );
   }
-
-  // ✅ Edit Invoice Info
-  // ✅ Edit Invoice Main Dialog
+  // ✅ Edit Invoice Unified Dialog
   Future<void> _openEditInvoiceDialog(
     String id,
     Map<String, dynamic> data,
   ) async {
+    // Indian States List
+    const List<String> indianStates = [
+      "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+      "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand",
+      "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur",
+      "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab",
+      "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
+      "Uttar Pradesh", "Uttarakhand", "West Bengal",
+      "Andaman and Nicobar Islands", "Chandigarh",
+      "Dadra and Nagar Haveli and Daman and Diu", "Delhi",
+      "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
+    ];
+
     final nameCtrl = TextEditingController(text: data['customer_name']);
     final billCtrl = TextEditingController(text: data['billing_address']);
     final shipCtrl = TextEditingController(text: data['shipping_address']);
     final noteCtrl = TextEditingController(text: data['note'] ?? '');
-    double gst = (data['gst_percentage'] ?? 18).toDouble();
+    
+    // Get customer state from data, default to Tamil Nadu if not found
+    String customerState = (data['customer_state'] ?? 'Tamil Nadu').toString();
+    if (!indianStates.contains(customerState)) {
+      customerState = 'Tamil Nadu';
+    }
+    
+    // Get company state (default to Tamil Nadu)
+    const String companyState = 'Tamil Nadu'; // TODO: Get from company settings
+    
+    // Calculate tax type based on state
+    String taxType = (customerState.trim().toLowerCase() != companyState.trim().toLowerCase())
+        ? 'IGST'
+        : 'CGST_SGST';
 
     DateTime invoiceDate =
         DateTime.tryParse(data['invoice_date'] ?? '') ?? DateTime.now();
@@ -485,706 +533,500 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
         DateTime.tryParse(data['due_date'] ?? '') ??
         DateTime.now().add(const Duration(days: 7));
 
+    // Items setup
+    List<Map<String, dynamic>> items = List<Map<String, dynamic>>.from(
+      data['items'] ?? [],
+    );
+    
+    // Ensure controllers for existing items
+    for (final i in items) {
+      i['qtyCtrl'] ??= TextEditingController(text: (i['qty'] ?? 1).toString());
+      i['rateCtrl'] ??= TextEditingController(
+        text: (i['rate'] ?? 0).toString(),
+      );
+      i['gstCtrl'] ??= TextEditingController(
+        text: (i['gst_percent'] ?? i['tax_percent'] ?? 0).toString(),
+      );
+      i['discountCtrl'] ??= TextEditingController(
+        text: (i['discount'] ?? 0).toString(),
+      );
+    }
+
+    double total = (data['grand_total'] ?? 0).toDouble();
+    
+    // Product cache
+    List<Map<String, dynamic>> products = [];
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .collection('products')
+            .get();
+        products = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+      } catch (e) {
+        debugPrint("⚠️ Product load error: $e");
+      }
+    }
+
     final formKey = GlobalKey<FormState>();
-
-    Future<void> _pickInvoiceDate(StateSetter setStateDialog) async {
-      final picked = await showDatePicker(
-        context: context,
-        initialDate: invoiceDate,
-        firstDate: DateTime(2020),
-        lastDate: DateTime(2100),
-      );
-      if (picked != null) {
-        setStateDialog(() {
-          invoiceDate = picked;
-          // adjust due date if older than invoice date
-          if (dueDate.isBefore(invoiceDate)) {
-            dueDate = invoiceDate.add(const Duration(days: 7));
-          }
-        });
-      }
-    }
-
-    Future<void> _pickDueDate(StateSetter setStateDialog) async {
-      final picked = await showDatePicker(
-        context: context,
-        initialDate: dueDate,
-        firstDate: invoiceDate,
-        lastDate: DateTime(2100),
-      );
-      if (picked != null) {
-        setStateDialog(() => dueDate = picked);
-      }
-    }
 
     await showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
             final df = DateFormat("dd MMM yyyy");
-            return AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              title: const Text(
-                "Edit Invoice",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              content: SingleChildScrollView(
-                child: Form(
-                  key: formKey,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 🔹 Invoice Date
-                      InkWell(
-                        onTap: () => _pickInvoiceDate(setStateDialog),
-                        child: InputDecorator(
-                          decoration: const InputDecoration(
-                            labelText: "Invoice Date",
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.calendar_today),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(df.format(invoiceDate)),
-                              const Icon(
-                                Icons.edit_calendar,
-                                color: Colors.teal,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
 
-                      // 🔹 Due Date
-                      InkWell(
-                        onTap: () => _pickDueDate(setStateDialog),
-                        child: InputDecorator(
-                          decoration: const InputDecoration(
-                            labelText: "Due Date",
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.schedule),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(df.format(dueDate)),
-                              const Icon(
-                                Icons.edit_calendar,
-                                color: Colors.teal,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-
-                      TextFormField(
-                        controller: nameCtrl,
-                        decoration: const InputDecoration(
-                          labelText: "Customer Name",
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (v) =>
-                            v!.trim().isEmpty ? "Enter customer name" : null,
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: billCtrl,
-                        decoration: const InputDecoration(
-                          labelText: "Billing Address",
-                          border: OutlineInputBorder(),
-                        ),
-                        maxLines: 2,
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: shipCtrl,
-                        decoration: const InputDecoration(
-                          labelText: "Shipping Address",
-                          border: OutlineInputBorder(),
-                        ),
-                        maxLines: 2,
-                      ),
-                      const SizedBox(height: 10),
-                      DropdownButtonFormField<double>(
-                        value: gst,
-                        decoration: const InputDecoration(
-                          labelText: "GST Percentage",
-                          border: OutlineInputBorder(),
-                        ),
-                        items: [0, 5, 12, 18, 28]
-                            .map(
-                              (v) => DropdownMenuItem(
-                                value: v.toDouble(),
-                                child: Text("$v%"),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: (v) => setStateDialog(() => gst = v ?? 18),
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: noteCtrl,
-                        decoration: const InputDecoration(
-                          labelText: "Notes (optional)",
-                          border: OutlineInputBorder(),
-                        ),
-                        maxLines: 2,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => _openEditItemsDialog(id, data),
-                  child: const Text("Edit Items"),
-                ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.save),
-                  label: const Text("Save Changes"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00A3A3),
-                  ),
-                  onPressed: () async {
-                    if (!formKey.currentState!.validate()) return;
-                    try {
-                      await _firestore
-                          .collection('users')
-                          .doc(_uid)
-                          .collection('invoices')
-                          .doc(id)
-                          .update({
-                            'customer_name': nameCtrl.text.trim(),
-                            'billing_address': billCtrl.text.trim(),
-                            'shipping_address': shipCtrl.text.trim(),
-                            'note': noteCtrl.text.trim(),
-                            'gst_percentage': gst,
-                            'invoice_date': invoiceDate.toIso8601String(),
-                            'due_date': dueDate.toIso8601String(),
-                            'updated_at': FieldValue.serverTimestamp(),
-                          });
-                      if (ctx.mounted) Navigator.pop(ctx);
-                      _showSnack(
-                        "✅ Invoice updated successfully!",
-                        success: true,
-                      );
-                    } catch (e) {
-                      _showSnack("❌ Error updating invoice: $e");
-                    }
-                  },
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _openEditItemsDialog(
-    String invoiceId,
-    Map<String, dynamic> invoiceData,
-  ) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final userRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid);
-    List<Map<String, dynamic>> items = List<Map<String, dynamic>>.from(
-      invoiceData['items'] ?? [],
-    );
-    double total = (invoiceData['grand_total'] ?? 0).toDouble();
-    final double oldTotal = total;
-    final customerName = invoiceData['customer_name'] ?? '';
-
-    final productCtrl = TextEditingController();
-    final rateCtrl = TextEditingController();
-    List<Map<String, dynamic>> allProducts = [];
-
-    try {
-      final snap = await userRef.collection('products').get();
-      allProducts = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
-    } catch (e) {
-      debugPrint("⚠️ Error loading products: $e");
-    }
-
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setStateDialog) {
             void recalc() {
-              total = items.fold(
-                0.0,
-                (sum, i) => sum + ((i['qty'] ?? 1) * (i['rate'] ?? 0)),
-              );
+              total = items.fold(0.0, (sum, i) {
+                final qty = double.tryParse(i['qtyCtrl'].text) ?? 1.0;
+                final rate = double.tryParse(i['rateCtrl'].text) ?? 0.0;
+                final gst = double.tryParse(i['gstCtrl'].text) ?? 0.0;
+                final discount = double.tryParse(i['discountCtrl']?.text ?? '0') ?? 0.0;
+                
+                final base = qty * rate;
+                final afterDiscount = base - (base * discount / 100);
+                final gstAmount = afterDiscount * (gst / 100);
+                
+                // Update item internal values
+                i['qty'] = qty;
+                i['rate'] = rate;
+                i['gst_percent'] = gst;
+                i['discount'] = discount;
+                i['taxable_amount'] = afterDiscount;
+                i['tax_amount'] = gstAmount;
+                i['amount'] = afterDiscount + gstAmount;
+
+                return sum + afterDiscount + gstAmount;
+              });
               setStateDialog(() {});
             }
 
-            Future<void> addItem(String name, double rate) async {
-              if (name.isEmpty || rate <= 0) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("⚠️ Enter valid product and rate"),
-                  ),
-                );
-                return;
-              }
-
-              items.add({'item': name, 'qty': 1.0, 'rate': rate});
-              recalc();
-
-              // Add product to database if not exists
-              final exists = allProducts.any(
-                (p) =>
-                    (p['name'] ?? '').toString().toLowerCase() ==
-                    name.toLowerCase(),
+            Future<void> _pickInvoiceDate() async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: invoiceDate,
+                firstDate: DateTime(2020),
+                lastDate: DateTime(2100),
               );
-              if (!exists) {
-                try {
-                  final doc = await userRef.collection('products').add({
-                    'name': name,
-                    'rate': rate,
-                    'created_at': FieldValue.serverTimestamp(),
-                  });
-                  allProducts.add({'id': doc.id, 'name': name, 'rate': rate});
-                } catch (e) {
-                  debugPrint("❌ Error adding new product: $e");
-                }
+              if (picked != null) {
+                setStateDialog(() {
+                  invoiceDate = picked;
+                  if (dueDate.isBefore(invoiceDate)) {
+                    dueDate = invoiceDate.add(const Duration(days: 7));
+                  }
+                });
               }
+            }
 
-              productCtrl.clear();
-              rateCtrl.clear();
+            Future<void> _pickDueDate() async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: dueDate,
+                firstDate: invoiceDate,
+                lastDate: DateTime(2100),
+              );
+              if (picked != null) {
+                setStateDialog(() => dueDate = picked);
+              }
+            }
+
+            void addItem() {
+              items.add({
+                'item': '',
+                'item_name': '',
+                'qty': 1.0,
+                'rate': 0.0,
+                'gst_percent': 0.0,
+                'discount': 0.0,
+                'qtyCtrl': TextEditingController(text: '1'),
+                'rateCtrl': TextEditingController(text: '0'),
+                'gstCtrl': TextEditingController(text: '0'),
+                'discountCtrl': TextEditingController(text: '0'),
+              });
+              setStateDialog(() {});
             }
 
             return Dialog.fullscreen(
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Scaffold(
-                  backgroundColor: Colors.grey.shade100,
-                  appBar: AppBar(
-                    backgroundColor: const Color(0xFF1F3A5F),
-                    foregroundColor: Colors.white,
-                    title: const Text("Edit Invoice Items"),
-                    centerTitle: true,
-                    actions: [
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.pop(ctx),
-                      ),
-                    ],
-                  ),
-                  body: SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        children: [
-                          // --- Product Add Row ---
-                          Row(
-                            children: [
-                              Expanded(
-                                flex: 4,
-                                child: Autocomplete<Map<String, dynamic>>(
-                                  displayStringForOption: (p) =>
-                                      p['name'] ?? '',
-                                  optionsBuilder: (text) {
-                                    if (text.text.isEmpty)
-                                      return const Iterable.empty();
-                                    return allProducts.where(
-                                      (p) => (p['name'] ?? '')
-                                          .toLowerCase()
-                                          .contains(text.text.toLowerCase()),
-                                    );
-                                  },
-                                  onSelected: (selected) {
-                                    productCtrl.text = selected['name'] ?? '';
-                                    rateCtrl.text = (selected['rate'] ?? 0)
-                                        .toString();
-                                  },
-                                  fieldViewBuilder:
-                                      (context, controller, node, onSubmit) {
-                                        controller.text = productCtrl.text;
-                                        return TextField(
-                                          controller: controller,
-                                          focusNode: node,
-                                          decoration: InputDecoration(
-                                            labelText: "Product",
-                                            border: OutlineInputBorder(
-                                              borderRadius:
-                                                  BorderRadius.circular(10),
-                                            ),
-                                            prefixIcon: const Icon(
-                                              Icons.shopping_bag_outlined,
-                                            ),
-                                          ),
-                                          onChanged: (v) =>
-                                              productCtrl.text = v,
-                                        );
-                                      },
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                flex: 2,
-                                child: TextField(
-                                  controller: rateCtrl,
-                                  keyboardType: TextInputType.number,
-                                  decoration: InputDecoration(
-                                    labelText: "Rate (₹)",
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
+              child: Scaffold(
+                backgroundColor: Colors.grey.shade50,
+                appBar: AppBar(
+                  title: const Text("Edit Invoice"),
+                  backgroundColor: const Color(0xFF1F3A5F),
+                  foregroundColor: Colors.white,
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                body: SafeArea(
+                  child: Form(
+                    key: formKey,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // --- Section 1: Invoice Details ---
+                                const Text(
+                                  "Invoice Details",
+                                  style: TextStyle(
+                                    fontSize: 18, 
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF1F3A5F),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 10),
-                              ElevatedButton(
-                                onPressed: () async {
-                                  final name = productCtrl.text.trim();
-                                  final rate =
-                                      double.tryParse(rateCtrl.text.trim()) ??
-                                      0.0;
-                                  await addItem(name, rate);
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF1F3A5F),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  minimumSize: const Size(65, 58),
-                                ),
-                                child: const Icon(Icons.add, size: 26),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 20),
-                          const Divider(),
-
-                          // --- Item List ---
-                          Expanded(
-                            child: ListView.builder(
-                              itemCount: items.length,
-                              itemBuilder: (context, index) {
-                                final i = items[index];
-                                final qtyCtrl = TextEditingController(
-                                  text: (i['qty'] ?? 1).toString(),
-                                );
-                                final rateCtrlItem = TextEditingController(
-                                  text: (i['rate'] ?? 0).toString(),
-                                );
-                                final amount =
-                                    (i['qty'] ?? 1.0) * (i['rate'] ?? 0.0);
-
-                                return Card(
-                                  margin: const EdgeInsets.symmetric(
-                                    vertical: 8,
-                                  ),
-                                  elevation: 3,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
+                                const SizedBox(height: 12),
+                                Card(
+                                  elevation: 2,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                   child: Padding(
-                                    padding: const EdgeInsets.all(10),
+                                    padding: const EdgeInsets.all(16),
                                     child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
                                       children: [
                                         Row(
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.spaceBetween,
                                           children: [
                                             Expanded(
-                                              child: Text(
-                                                i['item'] ?? 'Unnamed',
-                                                style: const TextStyle(
-                                                  fontSize: 15,
-                                                  fontWeight: FontWeight.w600,
+                                              child: InkWell(
+                                                onTap: _pickInvoiceDate,
+                                                child: InputDecorator(
+                                                  decoration: const InputDecoration(
+                                                    labelText: "Invoice Date",
+                                                    border: OutlineInputBorder(),
+                                                    prefixIcon: Icon(Icons.calendar_today),
+                                                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                  ),
+                                                  child: Text(df.format(invoiceDate)),
                                                 ),
                                               ),
                                             ),
-                                            IconButton(
-                                              icon: const Icon(
-                                                Icons.delete_outline,
-                                                color: Colors.redAccent,
-                                                size: 22,
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: InkWell(
+                                                onTap: _pickDueDate,
+                                                child: InputDecorator(
+                                                  decoration: const InputDecoration(
+                                                    labelText: "Due Date",
+                                                    border: OutlineInputBorder(),
+                                                    prefixIcon: Icon(Icons.schedule),
+                                                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                  ),
+                                                  child: Text(df.format(dueDate)),
+                                                ),
                                               ),
-                                              onPressed: () {
-                                                items.removeAt(index);
-                                                recalc();
-                                              },
                                             ),
                                           ],
                                         ),
-                                        const SizedBox(height: 8),
-
-                                        // --- Qty + Rate + Amount ---
-                                        // --- Qty + Rate + Amount ---
+                                        const SizedBox(height: 12),
+                                        TextFormField(
+                                          controller: nameCtrl,
+                                          decoration: const InputDecoration(
+                                            labelText: "Customer Name",
+                                            border: OutlineInputBorder(),
+                                            prefixIcon: Icon(Icons.person),
+                                          ),
+                                          validator: (v) => v!.trim().isEmpty ? "Required" : null,
+                                        ),
+                                        const SizedBox(height: 12),
                                         Row(
                                           children: [
-                                            // Qty field
-                                            Flexible(
-                                              flex: 3,
-                                              child: Row(
-                                                children: [
-                                                  IconButton(
-                                                    icon: const Icon(
-                                                      Icons
-                                                          .remove_circle_outline,
-                                                      color: Colors.redAccent,
-                                                      size: 20,
-                                                    ),
-                                                    onPressed: () {
-                                                      double qty =
-                                                          double.tryParse(
-                                                            qtyCtrl.text,
-                                                          ) ??
-                                                          1;
-                                                      if (qty > 1) {
-                                                        qty -= 1;
-                                                        qtyCtrl.text = qty
-                                                            .toString();
-                                                        i['qty'] = qty;
-                                                        recalc();
-                                                      }
-                                                    },
-                                                  ),
-                                                  SizedBox(
-                                                    width:
-                                                        MediaQuery.of(
-                                                          context,
-                                                        ).size.width *
-                                                        0.12, // ✅ smaller width
-                                                    child: TextField(
-                                                      controller: qtyCtrl,
-                                                      textAlign:
-                                                          TextAlign.center,
-                                                      style: const TextStyle(
-                                                        fontSize: 13,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                      ),
-                                                      keyboardType:
-                                                          TextInputType.number,
-                                                      decoration: const InputDecoration(
-                                                        border:
-                                                            OutlineInputBorder(),
-                                                        contentPadding:
-                                                            EdgeInsets.symmetric(
-                                                              vertical: 6,
-                                                              horizontal: 4,
-                                                            ),
-                                                      ),
-                                                      onChanged: (v) {
-                                                        i['qty'] =
-                                                            double.tryParse(
-                                                              v,
-                                                            ) ??
-                                                            1.0;
-                                                        recalc();
-                                                      },
-                                                    ),
-                                                  ),
-                                                  IconButton(
-                                                    icon: const Icon(
-                                                      Icons.add_circle_outline,
-                                                      color: Colors.green,
-                                                      size: 20,
-                                                    ),
-                                                    onPressed: () {
-                                                      double qty =
-                                                          double.tryParse(
-                                                            qtyCtrl.text,
-                                                          ) ??
-                                                          1;
-                                                      qty += 1;
-                                                      qtyCtrl.text = qty
-                                                          .toString();
-                                                      i['qty'] = qty;
-                                                      recalc();
-                                                    },
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                            const SizedBox(width: 6),
-
-                                            // ✅ Rate field with dynamic size
-                                            SizedBox(
-                                              width:
-                                                  MediaQuery.of(
-                                                    context,
-                                                  ).size.width *
-                                                  0.22,
-                                              child: TextField(
-                                                controller: rateCtrlItem,
-                                                textAlign: TextAlign.center,
-                                                keyboardType:
-                                                    TextInputType.number,
-                                                style: const TextStyle(
-                                                  fontSize: 13,
+                                            Expanded(
+                                              child: TextFormField(
+                                                controller: billCtrl,
+                                                decoration: const InputDecoration(
+                                                  labelText: "Billing Address",
+                                                  border: OutlineInputBorder(),
                                                 ),
-                                                decoration:
-                                                    const InputDecoration(
-                                                      labelText: "Rate (₹)",
-                                                      labelStyle: TextStyle(
-                                                        fontSize: 11,
-                                                      ),
-                                                      border:
-                                                          OutlineInputBorder(),
-                                                      contentPadding:
-                                                          EdgeInsets.symmetric(
-                                                            vertical: 6,
-                                                            horizontal: 6,
-                                                          ),
-                                                    ),
-                                                onChanged: (v) {
-                                                  i['rate'] =
-                                                      double.tryParse(v) ?? 0.0;
-                                                  recalc();
-                                                },
+                                                maxLines: 2,
                                               ),
                                             ),
-
-                                            const SizedBox(width: 8),
-
-                                            // Amount
-                                            Text(
-                                              "₹${amount.round()}",
-                                              style: const TextStyle(
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.teal,
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: TextFormField(
+                                                controller: shipCtrl,
+                                                decoration: const InputDecoration(
+                                                  labelText: "Shipping Address",
+                                                  border: OutlineInputBorder(),
+                                                ),
+                                                maxLines: 2,
                                               ),
                                             ),
                                           ],
+                                        ),
+                                        const SizedBox(height: 12),
+                                        DropdownButtonFormField<String>(
+                                          value: customerState,
+                                          isExpanded: true, // Prevents overflow
+                                          menuMaxHeight: 300, // Limits dropdown height and makes it scrollable
+                                          decoration: const InputDecoration(
+                                            labelText: "State of Supply",
+                                            border: OutlineInputBorder(),
+                                            prefixIcon: Icon(Icons.location_on),
+                                          ),
+                                          items: indianStates.map((state) {
+                                            return DropdownMenuItem(
+                                              value: state,
+                                              child: Text(
+                                                state,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            );
+                                          }).toList(),
+                                          onChanged: (v) {
+                                            setStateDialog(() {
+                                              customerState = v ?? 'Tamil Nadu';
+                                              // Recalculate tax type based on selected state
+                                              taxType = (customerState.trim().toLowerCase() != companyState.trim().toLowerCase())
+                                                  ? 'IGST'
+                                                  : 'CGST_SGST';
+                                            });
+                                          },
+                                        ),
+                                        const SizedBox(height: 12),
+                                        TextFormField(
+                                          controller: noteCtrl,
+                                          decoration: const InputDecoration(
+                                            labelText: "Notes (optional)",
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          maxLines: 2,
                                         ),
                                       ],
                                     ),
                                   ),
-                                );
-                              },
+                                ),
+
+                                const SizedBox(height: 24),
+
+                                // --- Section 2: Items ---
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      "Items",
+                                      style: TextStyle(
+                                        fontSize: 18, 
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1F3A5F),
+                                      ),
+                                    ),
+                                    ElevatedButton.icon(
+                                      onPressed: addItem,
+                                      icon: const Icon(Icons.add, size: 18),
+                                      label: const Text("Add Item"),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.green,
+                                        foregroundColor: Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                
+                                ...items.asMap().entries.map((entry) {
+                                  final idx = entry.key;
+                                  final item = entry.value;
+                                  final qtyCtrl = item['qtyCtrl'] as TextEditingController;
+                                  final rateCtrl = item['rateCtrl'] as TextEditingController;
+                                  final gstCtrl = item['gstCtrl'] as TextEditingController;
+                                  final discountCtrl = item['discountCtrl'] as TextEditingController;
+
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    elevation: 2,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(12),
+                                      child: Column(
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                flex: 3,
+                                                child: Autocomplete<Map<String, dynamic>>(
+                                                  displayStringForOption: (p) => p['name'] ?? '',
+                                                  optionsBuilder: (text) {
+                                                    if (text.text.isEmpty) return const Iterable.empty();
+                                                    return products.where((p) => (p['name'] ?? '').toString().toLowerCase().contains(text.text.toLowerCase()));
+                                                  },
+                                                  fieldViewBuilder: (context, controller, node, onSubmit) {
+                                                    if (controller.text.isEmpty && (item['item_name'] ?? '').isNotEmpty) {
+                                                      controller.text = item['item_name'];
+                                                    }
+                                                    return TextField(
+                                                      controller: controller,
+                                                      focusNode: node,
+                                                      decoration: const InputDecoration(
+                                                        labelText: "Item Name",
+                                                        border: OutlineInputBorder(),
+                                                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                                      ),
+                                                      onChanged: (v) {
+                                                        item['item_name'] = v;
+                                                        item['item'] = v;
+                                                      },
+                                                    );
+                                                  },
+                                                  onSelected: (sel) {
+                                                    item['item_name'] = sel['name'];
+                                                    item['item'] = sel['name'];
+                                                    item['rate'] = (sel['rate'] ?? 0).toDouble();
+                                                    item['gst_percent'] = (sel['gst_percent'] ?? 0).toDouble();
+                                                    
+                                                    rateCtrl.text = item['rate'].toString();
+                                                    gstCtrl.text = item['gst_percent'].toString();
+                                                    recalc();
+                                                  },
+                                                ),
+                                              ),
+                                              IconButton(
+                                                icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                                onPressed: () {
+                                                  items.removeAt(idx);
+                                                  recalc();
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: TextField(
+                                                  controller: qtyCtrl,
+                                                  keyboardType: TextInputType.number,
+                                                  decoration: const InputDecoration(labelText: "Qty", border: OutlineInputBorder()),
+                                                  onChanged: (_) => recalc(),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: TextField(
+                                                  controller: rateCtrl,
+                                                  keyboardType: TextInputType.number,
+                                                  decoration: const InputDecoration(labelText: "Rate", border: OutlineInputBorder()),
+                                                  onChanged: (_) => recalc(),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: TextField(
+                                                  controller: gstCtrl,
+                                                  keyboardType: TextInputType.number,
+                                                  decoration: const InputDecoration(labelText: "GST %", border: OutlineInputBorder()),
+                                                  onChanged: (_) => recalc(),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: TextField(
+                                                  controller: discountCtrl,
+                                                  keyboardType: TextInputType.number,
+                                                  decoration: const InputDecoration(labelText: "Disc %", border: OutlineInputBorder()),
+                                                  onChanged: (_) => recalc(),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                                
+                                const SizedBox(height: 100), // Space for bottom bar
+                              ],
                             ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                bottomSheet: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -5))],
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("Grand Total", style: TextStyle(color: Colors.grey)),
+                          Text(
+                            "₹${total.toStringAsFixed(2)}",
+                            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1F3A5F)),
                           ),
                         ],
                       ),
-                    ),
-                  ),
-                  bottomNavigationBar: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.withOpacity(0.2),
-                          blurRadius: 6,
-                          offset: const Offset(0, -2),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.save),
+                        label: const Text("Save Invoice"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1F3A5F),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                         ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          "Total: ₹${total.round()}",
-                          style: const TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blueAccent,
-                          ),
-                        ),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.save, size: 18),
-                          label: const Text(
-                            "Save",
-                            style: TextStyle(fontSize: 15),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF1F3A5F),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 12,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                          onPressed: () async {
-                            if (items.isEmpty) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text("⚠️ Add at least one item"),
-                                ),
-                              );
-                              return;
-                            }
+                        onPressed: () async {
+                          if (!formKey.currentState!.validate()) return;
+                          
+                          // Final recalc to ensure consistency
+                          recalc();
 
-                            try {
-                              await userRef
-                                  .collection('invoices')
-                                  .doc(invoiceId)
-                                  .update({
-                                    'items': items,
-                                    'grand_total': total,
-                                    'subtotal': total,
-                                  });
+                          try {
+                            // Clean items before saving
+                            final cleanItems = items.map((i) {
+                              final m = Map<String, dynamic>.from(i);
+                              m.remove('qtyCtrl');
+                              m.remove('rateCtrl');
+                              m.remove('gstCtrl');
+                              m.remove('discountCtrl');
+                              return m;
+                            }).toList();
 
-                              // ✅ Update outstanding correctly
-                              if (customerName.isNotEmpty) {
-                                final custSnap = await userRef
-                                    .collection('customers')
-                                    .get();
-                                QueryDocumentSnapshot<Map<String, dynamic>>?
-                                custDoc;
-
-                                for (var doc in custSnap.docs) {
-                                  if ((doc['name'] ?? '')
-                                          .toString()
-                                          .toLowerCase() ==
-                                      customerName.toLowerCase()) {
-                                    custDoc = doc;
-                                    break;
-                                  }
-                                }
-
-                                if (custDoc != null) {
-                                  final currentOutstanding =
-                                      (custDoc['outstanding'] ?? 0).toDouble();
-                                  final diff = total - oldTotal;
-                                  final newOutstanding =
-                                      (currentOutstanding + diff).clamp(
-                                        0,
-                                        double.infinity,
-                                      );
-                                  await custDoc.reference.update({
-                                    'outstanding': newOutstanding,
-                                    'updated_at': FieldValue.serverTimestamp(),
-                                  });
-                                }
-                              }
-
-                              if (ctx.mounted) Navigator.pop(ctx);
-                              _showSnack(
-                                "✅ Items updated successfully!",
-                                success: true,
-                              );
-                            } catch (e) {
-                              _showSnack("❌ Error saving: $e");
-                            }
-                          },
-                        ),
-                      ],
-                    ),
+                            await FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(uid)
+                                .collection('invoices')
+                                .doc(id)
+                                .update({
+                                  'customer_name': nameCtrl.text.trim(),
+                                  'billing_address': billCtrl.text.trim(),
+                                  'shipping_address': shipCtrl.text.trim(),
+                                  'note': noteCtrl.text.trim(),
+                                  'customer_state': customerState,
+                                  'tax_type': taxType,
+                                  'invoice_date': invoiceDate.toIso8601String(),
+                                  'due_date': dueDate.toIso8601String(),
+                                  'items': cleanItems,
+                                  'grand_total': total,
+                                  'updated_at': FieldValue.serverTimestamp(),
+                                });
+                            
+                            if (ctx.mounted) Navigator.pop(ctx);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text("✅ Invoice updated successfully!"), backgroundColor: Colors.green),
+                            );
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text("❌ Error updating invoice: $e")),
+                            );
+                          }
+                        },
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -1425,11 +1267,17 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                   Icons.print,
                                   color: Colors.blueAccent,
                                 ),
-                                onPressed: () => _generatePDF(
-                                  doc.id,
-                                  data,
-                                  printDirectly: true,
-                                ),
+                                onPressed: () async {
+                                  try {
+                                    await _generatePDF(
+                                      doc.id,
+                                      data,
+                                      printDirectly: true,
+                                    );
+                                  } catch (e) {
+                                    _showSnack("❌ Failed to print: $e");
+                                  }
+                                },
                               ),
                               PopupMenuButton<String>(
                                 shape: RoundedRectangleBorder(
@@ -1444,9 +1292,13 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                       _openEditInvoiceDialog(doc.id, data);
                                       break;
                                     case 'pdf':
-                                      _generatePDF(doc.id, data);
-
+                                      await _generatePDF(
+                                        doc.id,
+                                        data,
+                                        printDirectly: false,
+                                      );
                                       break;
+
                                     case 'pay':
                                       _addPayment(doc.id, data);
                                       break;
@@ -1469,7 +1321,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                   ),
                                   const PopupMenuItem(
                                     value: 'pdf',
-                                    child: Text("Download PDF"),
+                                    child: Text("Share PDF"),
                                   ),
                                   const PopupMenuItem(
                                     value: 'pay',
